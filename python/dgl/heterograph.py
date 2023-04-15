@@ -5585,7 +5585,7 @@ class DGLGraph(object):
         """
         return F.to_backend_ctx(self._graph.ctx)
 
-    def to(self, device, **kwargs):  # pylint: disable=invalid-name
+    def to(self, device, move_feat=True, **kwargs):  # pylint: disable=invalid-name
         """Move ndata, edata and graph structure to the targeted device (cpu/gpu).
 
         If the graph is already on the specified device, the function directly returns it.
@@ -5642,15 +5642,25 @@ class DGLGraph(object):
 
         # 2. Copy features
         # TODO(minjie): handle initializer
-        new_nframes = []
-        for nframe in self._node_frames:
-            new_nframes.append(nframe.to(device, **kwargs))
-        ret._node_frames = new_nframes
+        if move_feat:
+            # print('[PF] bg <convert3>copy_feat', time.time())
+            new_nframes = []
+            for nframe in self._node_frames:
+                new_nframes.append(nframe.to(device, **kwargs))
+            ret._node_frames = new_nframes
 
-        new_eframes = []
-        for eframe in self._edge_frames:
-            new_eframes.append(eframe.to(device, **kwargs))
-        ret._edge_frames = new_eframes
+            new_eframes = []
+            for eframe in self._edge_frames:
+                new_eframes.append(eframe.to(device, **kwargs))
+            ret._edge_frames = new_eframes
+            # print('[PF] ed <convert3>copy_feat', time.time())
+        else: # pin the features
+            # print('[PF] bg <convert3>pin_feat', time.time())
+            for frame in itertools.chain(self._node_frames, self._edge_frames):
+                    for col in frame._columns.values():
+                        utils.pin_memory_inplace(col.data)
+            ret._node_frames = self._node_frames
+            ret._edge_frames = self._edge_frames
 
         # 2. Copy misc info
         if self._batch_num_nodes is not None:
@@ -5666,6 +5676,9 @@ class DGLGraph(object):
             }
             ret._batch_num_edges = new_bne
 
+        # Copy ccg graph
+        if hasattr(ret, 'ccg'):
+            ret.ccg = ret.ccg.to(utils.to_dgl_context(device))
         return ret
 
     def cpu(self):

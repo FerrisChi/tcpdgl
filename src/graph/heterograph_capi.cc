@@ -479,13 +479,23 @@ DGL_REGISTER_GLOBAL("heterograph_index._CAPI_DGLHeteroAsNumBits")
 
 DGL_REGISTER_GLOBAL("heterograph_index._CAPI_DGLHeteroCopyTo")
     .set_body([](DGLArgs args, DGLRetValue* rv) {
+      size_t free, free1, tot;
+      cudaMemGetInfo(&free, &tot);
       HeteroGraphRef hg = args[0];
       int device_type = args[1];
       int device_id = args[2];
       DGLContext ctx;
       ctx.device_type = static_cast<DGLDeviceType>(device_type);
       ctx.device_id = device_id;
+      
       HeteroGraphPtr hg_new = HeteroGraph::CopyTo(hg.sptr(), ctx);
+      // force sync here
+      DGLStreamHandle stream = NULL;
+      // std::cout<<"DGLGetStream"<<std::endl;
+      DGLGetStream(device_type, device_id, &stream);
+      DGLSynchronize(device_type, device_id, stream);
+      cudaMemGetInfo(&free1, &tot);
+      std::cout<<"[PF] stat DGLGraph_gpu " << (free-free1)/1024/1024 << std::endl;
       *rv = HeteroGraphRef(hg_new);
     });
 

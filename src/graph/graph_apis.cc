@@ -3,6 +3,7 @@
  * @file graph/graph.cc
  * @brief DGL graph index APIs
  */
+#include <dgl/runtime/container.h>
 #include <dgl/graph.h>
 #include <dgl/graph_op.h>
 #include <dgl/immutable_graph.h>
@@ -11,6 +12,8 @@
 #include <dgl/sampler.h>
 
 #include "../c_api_common.h"
+#include "serialize/graph_serialize.h"
+#include "sampling/ccgsample/ccg_sample.h"
 
 using dgl::runtime::DGLArgs;
 using dgl::runtime::DGLArgValue;
@@ -323,5 +326,68 @@ DGL_REGISTER_GLOBAL("graph_index._CAPI_DGLSortAdj")
       GraphRef g = args[0];
       g->SortCSR();
     });
+
+DGL_REGISTER_GLOBAL("ccg._CAPI_TransferCCGTo_")
+.set_body([] (DGLArgs args, DGLRetValue* rv) {
+    dgl::serialize::CCGData hg = args[0];
+    const int device_type = args[1];
+    const int device_id = args[2];
+    DGLContext ctx;
+    ctx.device_type = static_cast<DGLDeviceType>(device_type);
+    ctx.device_id = device_id;
+    void *gpu_ccg = CCGCopyTo(hg->n_nodes, hg->ubl, hg->graph, hg->offset, ctx);
+    void *curand_states = InitCurand(ctx);
+    hg->gpu_ccg = gpu_ccg;
+    hg->curand_states = curand_states;
+    hg->graph.clear();
+    hg->offset.clear();
+    *rv = hg;
+  });
+
+DGL_REGISTER_GLOBAL("ccg._CAPI_CCGPinMemory_")
+.set_body([] (DGLArgs args, DGLRetValue* rv) {
+    dgl::serialize::CCGData hg = args[0];
+    // DeviceAPI::Get(kDGLCUDA)->PinData();
+    // hgindex->PinMemory_();
+    *rv = hg;
+  });
+
+DGL_REGISTER_GLOBAL("ccg._CAPI_CCGUnpinMemory_")
+.set_body([] (DGLArgs args, DGLRetValue* rv) {
+    dgl::serialize::CCGData hg = args[0];
+    // auto hgindex = std::dynamic_pointer_cast<HeteroGraph>(hg.sptr());
+    // hgindex->UnpinMemory_();
+    *rv = hg;
+  });
+
+DGL_REGISTER_GLOBAL("dataloading.dataloader._CAPI_AllocNextDoorDataOn")
+.set_body([](DGLArgs args, DGLRetValue *rv) {
+  dgl::serialize::CCGData ccg_data = args[0];
+  uint64_t seed_nodes_size = args[1];
+  IdArray fanouts_arr = args[2];
+  DGLContext ctx = args[3];
+  const auto& _fanouts = fanouts_arr.ToVector<int64_t>();
+
+  std::vector<int32_t> fanouts;
+  
+  for (auto f : _fanouts) {
+    fanouts.push_back(static_cast<int32_t>(f));
+  }
+  if (fanouts[0] == -1) { // CCGMultiLayerFullNeighborSampler
+    *rv = true;
+    return;
+  }
+  ccg_data->nextDoorData = new NextDoorData;
+
+  ccg_data->nextDoorData->setNumber(ccg_data->n_nodes, seed_nodes_size, fanouts);
+  
+  allocNextDoorDataOnDevice(*(ccg_data->nextDoorData), ctx);
+
+  setNextDoorData(ccg_data->nextDoorData,  ccg_data->gpu_ccg, ccg_data->curand_states);
+
+  // std::cout<<"Alloc NextDoorData done."<<std::endl;
+
+  *rv=true;
+});
 
 }  // namespace dgl

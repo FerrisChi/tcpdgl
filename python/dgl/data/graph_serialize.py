@@ -9,6 +9,9 @@ from .._ffi.object import ObjectBase, register_object
 from ..base import dgl_warning, DGLError
 from ..heterograph import DGLGraph
 from .heterograph_serialize import save_heterographs
+from ..ccg import CCG
+from ..frame import Frame
+from .heterograph_serialize import HeteroGraphData
 
 _init_api("dgl.data.graph_serialize")
 
@@ -270,3 +273,34 @@ def load_labels_v1(filename):
     for k, v in metadata.labels.items():
         label_dict[k] = F.zerocopy_from_dgl_ndarray(v)
     return label_dict
+
+@register_object("graph_serialize.CCGData")
+class CCGData(ObjectBase):
+    def get_graph(self):
+        v_num = _CAPI_GetVNumFromCCGData(self)
+        # data = _CAPI_GetDatafromCCGData(self)
+        return CCG(v_num, self)
+
+def is_local_path(filepath):
+    return not (filepath.startswith("hdfs://") or
+                filepath.startswith("viewfs://") or
+                filepath.startswith("s3://"))
+
+def load_ccg_for(graph, graph_path, feat_path=None):
+    ccgdata = _CAPI_LoadCCGFile(graph_path)
+    ccg_v_num = _CAPI_GetVNumFromCCGData(ccgdata)
+    if ccg_v_num != graph.number_of_nodes():
+        graph.add_nodes(ccg_v_num - graph.number_of_nodes())
+    if feat_path is not None and os.path.exists(feat_path):
+        graph = load_feat(graph, feat_path)
+    graph.ccg = ccgdata.get_graph()
+    graph.ccg._node_frames = [Frame()]
+    graph.ccg._edge_frames = [Frame()]
+    return graph
+
+def save_feat(graph, filename):
+    _CAPI_SaveFeat(filename, HeteroGraphData.create(graph))
+
+def load_feat(graph, filename):
+    ret = _CAPI_LoadFeat(filename, HeteroGraphData.create(graph))
+    return ret.get_graph()

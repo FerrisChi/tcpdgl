@@ -2,7 +2,8 @@
 from ..base import EID, NID
 from ..transforms import to_block
 from .base import BlockSampler
-
+from dgl.sampling.neighbor import ccg_sample_neighbors, ccg_sample_full_neighbors
+import time
 
 class NeighborSampler(BlockSampler):
     """Sampler that builds computational dependency of node representations via
@@ -198,3 +199,38 @@ class MultiLayerFullNeighborSampler(NeighborSampler):
 
     def __init__(self, num_layers, **kwargs):
         super().__init__([-1] * num_layers, **kwargs)
+
+class CCGNeighborSampler(BlockSampler):
+    def __init__(self, fanouts,
+                 prefetch_node_feats=None, prefetch_labels=None, prefetch_edge_feats=None,
+                 output_device=None):
+        super().__init__(prefetch_node_feats=prefetch_node_feats,
+                         prefetch_labels=prefetch_labels,
+                         prefetch_edge_feats=prefetch_edge_feats,
+                         output_device=output_device)
+        self.fanouts = fanouts
+
+    def sample_blocks(self, g, seed_nodes, exclude_eids=None):
+        # g is ccg graph here
+        print('[PF] bg sampler.sample_blocks', time.time())
+        seed_nodes, output_nodes, sample_blocks = g.ccg_sample_neighbors(seed_nodes, self.fanouts, copy_ndata=False, copy_edata=True)
+        print('[PF] ed sampler.sample_blocks', time.time())
+        return seed_nodes, output_nodes, sample_blocks
+
+class CCGMultiLayerFullNeighborSampler(BlockSampler):
+    def __init__(self, num_layers, fanouts=[-1],
+                 prefetch_node_feats=None, prefetch_labels=None, prefetch_edge_feats=None,
+                 output_device=None):
+        super().__init__(prefetch_node_feats=prefetch_node_feats,
+                         prefetch_labels=prefetch_labels,
+                         prefetch_edge_feats=prefetch_edge_feats,
+                         output_device=output_device)
+        self.num_layers = num_layers
+        self.fanouts = [-1] * num_layers
+
+    def sample_blocks(self, g, seed_nodes, exclude_eids=None):
+        # g is ccg graph here
+        print('[PF] bg sampler.sample_blocks', time.time())
+        seed_nodes, output_nodes, sample_blocks = g.ccg_sample_full_neighbors(seed_nodes, self.num_layers, copy_ndata=False, copy_edata=True)
+        print('[PF] ed sampler.sample_blocks', time.time())
+        return seed_nodes, output_nodes, sample_blocks

@@ -26,6 +26,7 @@
 #include "../../c_api_common.h"
 #include "dglgraph_data.h"
 #include "heterograph_data.h"
+#include "../sampling/ccgsample/ccg_sample.h"
 
 using dgl::ImmutableGraph;
 using dgl::runtime::NDArray;
@@ -81,6 +82,62 @@ class StorageMetaData : public runtime::ObjectRef {
     return StorageMetaData(std::make_shared<StorageMetaDataObject>());
   }
 };
+
+class CCGDataObject : public runtime::Object {
+ public:
+  // For saving CCG
+  uint64_t n_nodes, ubl;
+  std::vector<uint32_t> graph, offset;
+  void* gpu_ccg;
+  void* curand_states;
+  NextDoorData* nextDoorData;
+
+  CCGDataObject() {
+    this->n_nodes = 0;
+    this->ubl = 0;
+    this->graph = std::vector<uint32_t>();
+    this->offset = std::vector<uint32_t>();
+    this->gpu_ccg = nullptr;
+    this->nextDoorData = nullptr;
+  }
+
+  void Save(dmlc::Stream *fs) const {
+    // fs->Write(gptr);
+    // fs->Write(node_tensors);
+    // fs->Write(edge_tensors);
+    // fs->Write(ntype_names);
+    // fs->Write(etype_names);
+  }
+
+  bool Load(dmlc::Stream *fs) {
+    // fs->Read(&gptr);
+    // fs->Read(&node_tensors);
+    // // std::cout<<"read edge_tensors"<<std::endl;
+    // fs->Read(&edge_tensors);
+    // // std::cout<<"read ntype_names"<<std::endl;
+    // fs->Read(&ntype_names);
+    // // std::cout<<"read etype_names"<<std::endl;
+    // fs->Read(&etype_names);
+    return true;
+  }
+
+  static constexpr const char *_type_key = "graph_serialize.CCGData";
+
+  DGL_DECLARE_OBJECT_TYPE_INFO(CCGDataObject, runtime::Object);
+};
+
+class CCGData : public runtime::ObjectRef {
+ public:
+  DGL_DEFINE_OBJECT_REF_METHODS(CCGData, runtime::ObjectRef,
+                                CCGDataObject);
+
+  /*! \brief create a new CCGData reference */
+  static CCGData Create() {
+    return CCGData(std::make_shared<CCGDataObject>());
+  }
+};
+
+CCGData LoadCCG(const std::string &file_path);
 
 StorageMetaData LoadDGLGraphFiles(
     const std::string &filename, std::vector<dgl_id_t> idx_list, bool onlyMeta);

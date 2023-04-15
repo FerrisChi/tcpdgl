@@ -9,12 +9,13 @@
 #include <dgl/packed_func_ext.h>
 #include <dgl/runtime/container.h>
 #include <dgl/sampling/neighbor.h>
-
 #include <tuple>
 #include <utility>
 
 #include "../../../c_api_common.h"
 #include "../../unit_graph.h"
+#include "../../serialize/graph_serialize.h"
+#include "../ccgsample/ccg_sample.h"
 
 using namespace dgl::runtime;
 using namespace dgl::aten;
@@ -566,6 +567,160 @@ DGL_REGISTER_GLOBAL("sampling.neighbor._CAPI_DGLSampleNeighbors")
           hg.sptr(), nodes, fanouts, dir, prob_or_mask, exclude_edges, replace);
 
       *rv = HeteroSubgraphRef(subg);
+    });
+
+DGL_REGISTER_GLOBAL("sampling.neighbor._CAPI_CCGSampleNeighbors")
+.set_body([] (DGLArgs args, DGLRetValue *rv) {
+    // auto _outt = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch());
+    // std::cout << "[PF] bg cpp_sample.capitotal " << std::fixed << std::setprecision(7) << (double)(_outt.count() * 0.000001) << "\n";
+
+    dgl::serialize::CCGData g = args[0];
+    IdArray seed_nodes = args[1];
+    // const auto seed_nodes = seed_nodes_arr.ToVector<int64_t>();
+    IdArray fanouts_array = args[2];
+    const auto& fanouts = fanouts_array.ToVector<int64_t>();
+    // const IdArray &fanouts = args[2];
+    // const auto& _fanouts = fanouts_arr.ToVector<int64_t>();
+
+    // auto _outt = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()); // nanoseconds
+    // std::cout << "[PF] bg cpp_sample.ccgspl " << std::fixed << std::setprecision(7) << (double)(_outt.count() * 0.000001) << "\n";
+    std::vector<COOMatrix> sampled_coos = CCGSampleNeighbors(g->n_nodes, g->gpu_ccg, g->curand_states, g->nextDoorData, seed_nodes, fanouts);
+    // _outt = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch());
+    // std::cout << "[PF] ed cpp_sample.ccgspl " << std::fixed << std::setprecision(7) << (double)(_outt.count() * 0.000001) << "\n";
+
+    auto createmg = []{
+      std::vector<int64_t> row_vec(1, 0);
+      std::vector<int64_t> col_vec(1, 0);
+      IdArray row = aten::VecToIdArray(row_vec);
+      IdArray col = aten::VecToIdArray(col_vec);
+      return ImmutableGraph::CreateFromCOO(1, row, col);};
+    const auto mg = createmg();
+
+    std::vector<HeteroSubgraphRef> ret;
+    for (auto sampled_coo : sampled_coos) {
+      std::vector<HeteroGraphPtr> subrels(1);
+      std::vector<IdArray> induced_edges(1);
+      
+      subrels[0] = UnitGraph::CreateFromCOO(
+        1, sampled_coo.num_rows, sampled_coo.num_cols,
+        sampled_coo.row, sampled_coo.col);
+      induced_edges[0] = sampled_coo.data;
+
+      HeteroSubgraph hsg;
+      
+      hsg.graph = CreateHeteroGraph(mg, subrels, {(int64_t)g->n_nodes});
+      hsg.induced_vertices.resize(1);
+      hsg.induced_edges = std::move(induced_edges);
+
+      std::shared_ptr<HeteroSubgraph> subg(new HeteroSubgraph);
+      *subg = hsg;
+      ret.push_back(HeteroSubgraphRef(subg));
+    }
+    *rv = List<HeteroSubgraphRef>(ret);
+    // _outt = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch());
+    // std::cout << "[PF] ed cpp_sample.capitotal " << std::fixed << std::setprecision(7) << (double)(_outt.count() * 0.000001) << "\n";
+  });
+
+DGL_REGISTER_GLOBAL("sampling.neighbor._CAPI_CCGFullLayerNeighbors")
+.set_body([] (DGLArgs args, DGLRetValue *rv) {
+    dgl::serialize::CCGData g = args[0];
+    IdArray seed_nodes_arr = args[1];
+    int64_t num_layers = args[2];
+
+    std::vector<COOMatrix> sampled_coos = CCGSampleFullLayers(g->n_nodes, g->gpu_ccg, seed_nodes_arr, num_layers);
+
+    auto createmg = []{
+      std::vector<int64_t> row_vec(1, 0);
+      std::vector<int64_t> col_vec(1, 0);
+      IdArray row = aten::VecToIdArray(row_vec);
+      IdArray col = aten::VecToIdArray(col_vec);
+      return ImmutableGraph::CreateFromCOO(1, row, col);};
+    const auto mg = createmg();
+
+    std::vector<HeteroSubgraphRef> ret;
+    for (auto sampled_coo : sampled_coos) {
+      std::vector<HeteroGraphPtr> subrels(1);
+      std::vector<IdArray> induced_edges(1);
+      
+      subrels[0] = UnitGraph::CreateFromCOO(
+        1, sampled_coo.num_rows, sampled_coo.num_cols,
+        sampled_coo.row, sampled_coo.col);
+      induced_edges[0] = sampled_coo.data;
+
+      HeteroSubgraph hsg;
+      
+      hsg.graph = CreateHeteroGraph(mg, subrels, {(int64_t)g->n_nodes});
+      hsg.induced_vertices.resize(1);
+      hsg.induced_edges = std::move(induced_edges);
+
+      std::shared_ptr<HeteroSubgraph> subg(new HeteroSubgraph);
+      *subg = hsg;
+      ret.push_back(HeteroSubgraphRef(subg));
+    }
+    *rv = List<HeteroSubgraphRef>(ret);
+
+  });
+
+DGL_REGISTER_GLOBAL("sampling.labor._CAPI_CCGSampleLabors")
+    .set_body([](DGLArgs args, DGLRetValue* rv) {
+      // HeteroGraphRef hg = args[0];
+      dgl::serialize::CCGData g = args[0];
+      const auto& nodes = ListValueToVector<IdArray>(args[1]);
+      IdArray fanouts_array = args[2];
+      const auto& fanouts = fanouts_array.ToVector<int64_t>();
+      const std::string dir_str = args[3];
+      const auto& prob = ListValueToVector<FloatArray>(args[4]);
+      const auto& exclude_edges = ListValueToVector<IdArray>(args[5]);
+      const int importance_sampling = args[6];
+      const IdArray random_seed = args[7];
+      const auto& NIDs = ListValueToVector<IdArray>(args[8]);
+
+      CHECK(dir_str == "in" || dir_str == "out")
+          << "Invalid edge direction. Must be \"in\" or \"out\".";
+      EdgeDir dir = (dir_str == "in") ? EdgeDir::kIn : EdgeDir::kOut;
+
+      std::vector<HeteroGraphPtr> subrels(1);
+      std::vector<IdArray> induced_edges(1);
+      COOMatrix sampled_coo;
+      std::vector<FloatArray> subimportances(1);
+      const auto dtype = IsNullArray(prob[0]) ? DGLDataTypeTraits<float>::dtype : prob[0]->dtype;
+
+      ATEN_FLOAT_TYPE_SWITCH(dtype, FloatType, "probability", {
+        std::tie(sampled_coo, subimportances[0]) = CCGLaborSampling<kDGLCUDA, int64_t, FloatType>(
+          g->gpu_ccg, g->n_nodes, nodes[0], fanouts[0], prob[0], importance_sampling, random_seed, NIDs[0]);
+      });
+
+      subrels[0] = UnitGraph::CreateFromCOO(
+          1, sampled_coo.num_rows,
+          sampled_coo.num_cols, sampled_coo.row, sampled_coo.col);
+      induced_edges[0] = sampled_coo.data;
+
+      auto createmg = []{
+        std::vector<int64_t> row_vec(1, 0);
+        std::vector<int64_t> col_vec(1, 0);
+        IdArray row = aten::VecToIdArray(row_vec);
+        IdArray col = aten::VecToIdArray(col_vec);
+        return ImmutableGraph::CreateFromCOO(1, row, col);};
+      const auto mg = createmg();
+
+      HeteroSubgraph hsg;
+      
+      hsg.graph = CreateHeteroGraph(mg, subrels, {(int64_t)g->n_nodes});
+      hsg.induced_vertices.resize(1);
+      hsg.induced_edges = std::move(induced_edges);
+
+      // with bug
+      // if (!exclude_edges.empty()) {
+      //   return ExcludeCertainEdges(hsg, exclude_edges).first;
+      // }
+
+      std::shared_ptr<HeteroSubgraph> subg_ptr(new HeteroSubgraph);
+      *subg_ptr = hsg;
+      List<Value> ret_val;
+      ret_val.push_back(Value(subg_ptr));
+      for (auto& imp : subimportances)
+        ret_val.push_back(Value(MakeValue(imp)));
+      *rv = ret_val;
     });
 
 DGL_REGISTER_GLOBAL("sampling.neighbor._CAPI_DGLSampleNeighborsTopk")

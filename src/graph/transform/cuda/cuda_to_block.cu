@@ -42,6 +42,26 @@ namespace transform {
 
 namespace {
 
+__global__ void gpuprint(int *arr, int64_t len = 10)
+{
+  if (threadIdx.x == 0 && blockIdx.x == 0)
+  {
+    for (int i = 0; i < len; ++i)
+      printf("%d ", arr[i]);
+    printf("\n");
+  }
+}
+
+__global__ void gpuprint(int64_t *arr, int64_t len = 10)
+{
+  if (threadIdx.x == 0 && blockIdx.x == 0)
+  {
+    for (int i = 0; i < len; ++i)
+      printf("%ld ", arr[i]);
+    printf("\n");
+  }
+}
+
 template <typename IdType>
 class DeviceNodeMapMaker {
  public:
@@ -154,6 +174,21 @@ struct CUDAIdsMapper {
     const bool generate_lhs_nodes = lhs_nodes.empty();
     auto device = runtime::DeviceAPI::Get(ctx);
     cudaStream_t stream = runtime::getCurrentCUDAStream();
+
+    // std::cout<<"maxNodesPerType "<<maxNodesPerType[0]<<maxNodesPerType[1]<<std::endl;
+    // std::cout<<"edge_arrays "<<edge_arrays[0].src->shape[0]<<std::endl;
+    // gpuprint<<<1,1>>>((IdType*)edge_arrays[0].src->data, edge_arrays[0].src->shape[0]);
+    // device->StreamSync(ctx, stream);
+    // gpuprint<<<1,1>>>((IdType*)edge_arrays[0].dst->data, edge_arrays[0].dst->shape[0]);
+    // device->StreamSync(ctx, stream);
+    // gpuprint<<<1,1>>>((IdType*)edge_arrays[0].id->data, edge_arrays[0].id->shape[0]);
+    // device->StreamSync(ctx, stream);
+    // std::cout<<"src_nodes "<<src_nodes[0]->shape[0]<<std::endl;
+    // gpuprint<<<1,1>>>((IdType*)src_nodes[0]->data, src_nodes[0]->shape[0]);
+    // device->StreamSync(ctx, stream);
+    // std::cout<<"rhs_nodes "<<rhs_nodes[0]->shape[0]<<std::endl;
+    // gpuprint<<<1,1>>>((IdType*)rhs_nodes[0]->data, rhs_nodes[0]->shape[0]);
+    // device->StreamSync(ctx, stream);
 
     // Allocate space for map creation process.
     DeviceNodeMapMaker<IdType> maker(maxNodesPerType);

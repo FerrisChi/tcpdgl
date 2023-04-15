@@ -29,7 +29,7 @@
 # - ON: enable CUDA with cmake's auto search
 # - OFF: disable CUDA
 # - /path/to/cuda: use specific path to cuda toolkit
-set(USE_CUDA OFF)
+set(USE_CUDA ON)
 
 #---------------------------------------------
 # Misc.
@@ -48,3 +48,10 @@ set(USE_TVM OFF)
 
 # Whether to build DGL sparse library.
 set(BUILD_SPARSE ON)
+# Whether to enable fp16 to support mixed precision training.
+set(USE_FP16 OFF)
+
+# https://cmake.org/cmake/help/latest/variable/CMAKE_BUILD_TYPE.html
+# -DCMAKE_BUILD_TYPE="Debug" 
+# Debug Release RelWithDebInfo MinSizeRel
+set(CMAKE_BUILD_TYPE "Debug")

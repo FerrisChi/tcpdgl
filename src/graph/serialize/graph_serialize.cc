@@ -32,7 +32,7 @@
  *
  */
 #include "graph_serialize.h"
-
+#include "./dglstream.h"
 #include <dgl/graph_op.h>
 #include <dgl/immutable_graph.h>
 #include <dgl/runtime/container.h>
@@ -160,6 +160,44 @@ DGL_REGISTER_GLOBAL("data.graph_serialize._CAPI_LoadGraphFiles_V2")
       auto idx_list = ListValueToVector<dgl_id_t>(idxs);
       *rv = List<HeteroGraphData>(LoadHeteroGraphs(filename, idx_list));
     });
+
+DGL_REGISTER_GLOBAL("data.graph_serialize._CAPI_LoadCCGFile")
+  .set_body([](DGLArgs args, DGLRetValue *rv) {
+    std::string file_path = args[0];
+    *rv = LoadCCG(file_path);
+  });
+
+DGL_REGISTER_GLOBAL("data.graph_serialize._CAPI_GetVNumFromCCGData")
+  .set_body([](DGLArgs args, DGLRetValue *rv) {
+    CCGData ccg_data = args[0];
+    *rv = (int64_t)(ccg_data->n_nodes);
+  });
+
+  
+DGL_REGISTER_GLOBAL("data.graph_serialize._CAPI_SaveFeat")
+  .set_body([](DGLArgs args, DGLRetValue *rv) {
+    std::string filename = args[0];
+    HeteroGraphData gdata = args[1];
+    auto fs = std::unique_ptr<DGLStream>(
+    DGLStream::Create(filename.c_str(), "w", false, ANY_CODE));
+    CHECK(fs->IsValid()) << "File name " << filename << " is not a valid name";
+
+    fs->Write(gdata->node_tensors);
+    fs->Write(gdata->edge_tensors);
+  });
+
+DGL_REGISTER_GLOBAL("data.graph_serialize._CAPI_LoadFeat")
+  .set_body([](DGLArgs args, DGLRetValue *rv) {
+    std::string filename = args[0];
+    HeteroGraphData gdata = args[1];
+    auto fs = std::unique_ptr<DGLStream>(
+    DGLStream::Create(filename.c_str(), "r", false, ANY_CODE));
+    CHECK(fs->IsValid()) << "File name " << filename << " is not a valid name";
+    fs->Read(&(gdata->node_tensors));
+    fs->Read(&(gdata->edge_tensors));
+    *rv = gdata;
+  });
+  
 
 }  // namespace serialize
 }  // namespace dgl

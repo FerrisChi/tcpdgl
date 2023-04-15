@@ -16,8 +16,10 @@ import torch
 import torch.distributed as dist
 from torch.utils.data.distributed import DistributedSampler
 
+import time
 from .. import backend as F
 from .._ffi.base import is_tensor_adaptor_enabled
+from .._ffi.function import _init_api
 
 from ..base import dgl_warning, DGLError, EID, NID
 from ..batch import batch as batch_graphs
@@ -40,6 +42,7 @@ from ..utils import (
 PYTORCH_VER = version.parse(torch.__version__)
 PYTHON_EXIT_STATUS = False
 
+_init_api("dgl.dataloading.dataloader")
 
 def _set_python_exit_flag():
     global PYTHON_EXIT_STATUS
@@ -589,7 +592,9 @@ class _PrefetchingIter(object):
             self._shutdown()
 
     def _next_non_threaded(self):
+        print('[PF] bg dataloader_it.next', time.time())
         batch = next(self.dataloader_it)
+        print('[PF] ed dataloader_it.next', time.time())
         batch = recursive_apply(
             batch, restore_parent_storage_columns, self.dataloader.graph
         )
@@ -615,6 +620,7 @@ class _PrefetchingIter(object):
         return batch, feats, stream_event
 
     def __next__(self):
+        print('[PF] bg dataloader.__next__', time.time())
         batch, feats, stream_event = (
             self._next_non_threaded()
             if not self.use_thread
@@ -623,6 +629,7 @@ class _PrefetchingIter(object):
         batch = recursive_apply_pair(batch, feats, _assign_for)
         if stream_event is not None:
             stream_event.wait()
+        print('[PF] ed dataloader.__next__', time.time())
         return batch
 
 
@@ -960,19 +967,19 @@ class DataLoader(torch.utils.data.DataLoader):
                 if use_prefetch_thread is None:
                     use_prefetch_thread = True
             else:
-                if pin_prefetcher is True:
-                    raise ValueError(
-                        "pin_prefetcher=True is only effective when device=cuda and "
-                        "sampling is performed on CPU."
-                    )
+                # if pin_prefetcher is True:
+                #     raise ValueError(
+                #         "pin_prefetcher=True is only effective when device=cuda and "
+                #         "sampling is performed on CPU."
+                #     )
                 if pin_prefetcher is None:
                     pin_prefetcher = False
 
-                if use_prefetch_thread is True:
-                    raise ValueError(
-                        "use_prefetch_thread=True is only effective when device=cuda and "
-                        "sampling is performed on CPU."
-                    )
+                # if use_prefetch_thread is True:
+                #     raise ValueError(
+                #         "use_prefetch_thread=True is only effective when device=cuda and "
+                #         "sampling is performed on CPU."
+                #     )
                 if use_prefetch_thread is None:
                     use_prefetch_thread = False
 
@@ -1153,6 +1160,326 @@ class DataLoader(torch.utils.data.DataLoader):
     def attach_data(self, name, data):
         """Add a data other than node and edge features for prefetching."""
         self.other_storages[name] = wrap_storage(data)
+
+class CCGDataLoader(torch.utils.data.DataLoader):
+    def __init__(
+        self,
+        graph,
+        indices,
+        graph_sampler,
+        device=None,
+        use_ddp=False,
+        ddp_seed=0,
+        batch_size=1,
+        drop_last=False,
+        shuffle=False,
+        use_prefetch_thread=None,
+        use_alternate_streams=None,
+        pin_prefetcher=None,
+        use_uva=False,
+        **kwargs,
+    ):
+        if isinstance(kwargs.get("collate_fn", None), CollateWrapper):
+            assert batch_size is None  # must be None
+            # restore attributes
+            self.graph = graph
+            self.indices = indices
+            self.graph_sampler = graph_sampler
+            self.device = device
+            self.use_ddp = use_ddp
+            self.ddp_seed = ddp_seed
+            self.shuffle = shuffle
+            self.drop_last = drop_last
+            self.use_prefetch_thread = use_prefetch_thread
+            self.use_alternate_streams = use_alternate_streams
+            self.pin_prefetcher = pin_prefetcher
+            self.use_uva = use_uva
+            kwargs["batch_size"] = None
+            super().__init__(**kwargs)
+            return
+        
+        if isinstance(graph, DistGraph):
+            raise TypeError(
+                "Please use dgl.dataloading.DistNodeDataLoader or "
+                "dgl.datalaoding.DistEdgeDataLoader for DistGraphs."
+            )
+        
+        self.graph = graph
+        self.indices = indices      # For PyTorch-Lightning
+        num_workers = kwargs.get("num_workers", 0)
+
+        # if not hasattr(self.graph, "ccg"):
+        #     raise TypeError('CCG should be included.')
+
+        indices_device = None
+        try:
+            if isinstance(indices, Mapping):
+                indices = {
+                    k: (torch.tensor(v) if not torch.is_tensor(v) else v)
+                    for k, v in indices.items()
+                }
+                indices_device = next(iter(indices.values())).device
+            else:
+                indices = (
+                    torch.tensor(indices)
+                    if not torch.is_tensor(indices)
+                    else indices
+                )
+                indices_device = indices.device
+        except:  # pylint: disable=bare-except
+            # ignore when it fails to convert to torch Tensors.
+            pass
+
+        if indices_device is None:
+            if not hasattr(indices, "device"):
+                raise AttributeError(
+                    'Custom indices dataset requires a "device" \
+                attribute indicating where the indices is.'
+                )
+            indices_device = indices.device
+
+        if device is None:
+            if use_uva:
+                device = torch.cuda.current_device()
+            else:
+                device = self.graph.device
+        self.device = _get_device(device)
+
+        if self.device == 'cpu':
+            raise ValueError('CCG must be sampled on CUDA.')
+
+        # Sanity check - we only check for DGLGraphs.
+        if isinstance(self.graph, DGLGraph):
+            # Check graph and indices device as well as num_workers
+            if use_uva:
+                if self.graph.device.type != "cpu":
+                    raise ValueError(
+                        "Graph must be on CPU if UVA sampling is enabled."
+                    )
+                if num_workers > 0:
+                    raise ValueError(
+                        "num_workers must be 0 if UVA sampling is enabled."
+                    )
+
+                # Create all the formats and pin the features - custom GraphStorages
+                # will need to do that themselves.
+                self.graph.create_formats_()
+                self.graph.pin_memory_()
+
+                self.graph.ccg.pin_memory_()
+                for frame in itertools.chain(self.graph._node_frames, self.graph._edge_frames):
+                    for col in frame._columns.values():
+                        pin_memory_inplace(col.data)
+                        
+            else:
+                if self.graph.device != indices_device:
+                    raise ValueError(
+                        "Expect graph and indices to be on the same device when use_uva=False. "
+                    )
+                if self.graph.device.type == "cuda" and num_workers > 0:
+                    raise ValueError(
+                        "num_workers must be 0 if graph and indices are on CUDA."
+                    )
+                if self.graph.device.type == "cpu" and num_workers > 0:
+                    # Instantiate all the formats if the number of workers is greater than 0.
+                    self.graph.create_formats_()
+
+            # Check pin_prefetcher and use_prefetch_thread - should be only effective
+            # if performing CPU sampling but output device is CUDA
+            if (
+                self.device.type == "cuda"
+                and self.graph.device.type == "cpu"
+                and not use_uva
+            ):
+                if pin_prefetcher is None:
+                    pin_prefetcher = True
+                if use_prefetch_thread is None:
+                    use_prefetch_thread = True
+            else:
+                # if pin_prefetcher is True:
+                #     raise ValueError(
+                #         "pin_prefetcher=True is only effective when device=cuda and "
+                #         "sampling is performed on CPU."
+                #     )
+                if pin_prefetcher is None:
+                    pin_prefetcher = False
+
+                # if use_prefetch_thread is True:
+                #     raise ValueError(
+                #         "use_prefetch_thread=True is only effective when device=cuda and "
+                #         "sampling is performed on CPU."
+                #     )
+                if use_prefetch_thread is None:
+                    use_prefetch_thread = False
+
+            # Check use_alternate_streams
+            if use_alternate_streams is None:
+                use_alternate_streams = (
+                    self.device.type == "cuda"
+                    and self.graph.device.type == "cpu"
+                    and not use_uva
+                    and is_tensor_adaptor_enabled()
+                )
+            elif use_alternate_streams and not is_tensor_adaptor_enabled():
+                dgl_warning(
+                    "use_alternate_streams is turned off because "
+                    "TensorAdaptor is not available."
+                )
+                use_alternate_streams = False
+
+        if torch.is_tensor(indices) or (
+            isinstance(indices, Mapping)
+            and all(torch.is_tensor(v) for v in indices.values())
+        ):
+            self.dataset = create_tensorized_dataset(
+                indices,
+                batch_size,
+                drop_last,
+                use_ddp,
+                ddp_seed,
+                shuffle,
+                kwargs.get("persistent_workers", False),
+            )
+        else:
+            self.dataset = indices
+
+        self.ddp_seed = ddp_seed
+        self.use_ddp = use_ddp
+        self.use_uva = use_uva
+        self.shuffle = shuffle
+        self.drop_last = drop_last
+        self.graph_sampler = graph_sampler
+        self.use_alternate_streams = use_alternate_streams
+        self.pin_prefetcher = pin_prefetcher
+        self.use_prefetch_thread = use_prefetch_thread
+        self.cpu_affinity_enabled = False
+
+        worker_init_fn = WorkerInitWrapper(kwargs.pop("worker_init_fn", None))
+
+        self.other_storages = {}
+
+        fanouts = torch.tensor(list(reversed(graph_sampler.fanouts)))
+        
+        # print('[PF] bg py_alloc_data', time.time())
+        if hasattr(self.graph, "ccg"):
+            _CAPI_AllocNextDoorDataOn(self.graph.ccg.ccg_data, batch_size, F.to_dgl_nd(fanouts), self.graph.ccg.ctx)
+        # elif hasattr(self.graph, "ccg_data"):
+        #     _CAPI_AllocNextDoorDataOn(self.graph.ccg_data, batch_size, F.to_dgl_nd(fanouts))
+        # print('[PF] ed py_alloc_data', time.time())
+
+        super().__init__(
+            self.dataset,
+            collate_fn=CollateWrapper(
+                self.graph_sampler.sample, graph, self.use_uva, self.device
+            ),
+            batch_size=None,
+            pin_memory=self.pin_prefetcher,
+            worker_init_fn=worker_init_fn,
+            **kwargs,
+        )
+
+    def __iter__(self):
+        if self.shuffle:
+            self.dataset.shuffle()
+        # When using multiprocessing PyTorch sometimes set the number of PyTorch threads to 1
+        # when spawning new Python threads.  This drastically slows down pinning features.
+        num_threads = torch.get_num_threads() if self.num_workers > 0 else None
+        return _CCGPrefetchingIter(
+            self, super().__iter__(), num_threads=num_threads
+        )
+
+    # To allow data other than node/edge data to be prefetched.
+    def attach_data(self, name, data):
+        """Add a data other than node and edge features for prefetching."""
+        self.other_storages[name] = wrap_storage(data)
+
+class _CCGPrefetchingIter(object):
+    def __init__(self, dataloader, dataloader_it, num_threads=None):
+        self.queue = Queue(1)
+        self.dataloader_it = dataloader_it
+        self.dataloader = dataloader
+        self.num_threads = num_threads
+
+        self.use_thread = dataloader.use_prefetch_thread
+        self.use_alternate_streams = dataloader.use_alternate_streams
+        self.device = self.dataloader.device
+        if self.use_alternate_streams and self.device.type == "cuda":
+            self.stream = torch.cuda.Stream(device=self.device)
+        else:
+            self.stream = None
+        self._shutting_down = False
+        if self.use_thread:
+            self._done_event = threading.Event()
+            thread = threading.Thread(
+                target=_prefetcher_entry,
+                args=(
+                    dataloader_it,
+                    dataloader,
+                    self.queue,
+                    num_threads,
+                    self.stream,
+                    self._done_event,
+                ),
+                daemon=True,
+            )
+            thread.start()
+            self.thread = thread
+
+    def __iter__(self):
+        return self
+
+    def _shutdown(self):
+        # Sometimes when Python is exiting complicated operations like
+        # self.queue.get_nowait() will hang.  So we set it to no-op and let Python handle
+        # the rest since the thread is daemonic.
+        # PyTorch takes the same solution.
+        if PYTHON_EXIT_STATUS is True or PYTHON_EXIT_STATUS is None:
+            return
+        if not self._shutting_down:
+            try:
+                self._shutting_down = True
+                self._done_event.set()
+
+                try:
+                    self.queue.get_nowait()  # In case the thread is blocking on put().
+                except:  # pylint: disable=bare-except
+                    pass
+
+                self.thread.join()
+            except:  # pylint: disable=bare-except
+                pass
+
+    def __del__(self):
+        if self.use_thread:
+            self._shutdown()
+
+    # @profile
+    def _next_non_threaded(self):
+        print('[PF] bg dataloader_it.next', time.time())
+        batch = next(self.dataloader_it)
+        print('[PF] ed dataloader_it.next', time.time())
+        batch = recursive_apply(
+            batch, restore_parent_storage_columns, self.dataloader.graph
+        )
+        batch, feats, stream_event = _prefetch(
+            batch, self.dataloader, self.stream
+        )
+        return batch, feats, stream_event
+
+    # @profile
+    def __next__(self):
+        print('[PF] bg dataloader.__next__', time.time())
+        batch, feats, stream_event = (
+            self._next_non_threaded()
+            if not self.use_thread
+            else self._next_threaded()
+        )
+        batch = recursive_apply_pair(batch, feats, _assign_for)
+        if stream_event is not None:
+            stream_event.wait()
+        print('[PF] ed dataloader.__next__', time.time())
+        # traceback.print_stack()
+        return batch # (input_nodes, output_nodes, blocks)
 
 
 ######## Graph DataLoaders ########
