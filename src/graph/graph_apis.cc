@@ -327,6 +327,10 @@ DGL_REGISTER_GLOBAL("graph_index._CAPI_DGLSortAdj")
       g->SortCSR();
     });
 
+////////////////////////////////
+// CCG C APIs
+////////////////////////////////
+
 DGL_REGISTER_GLOBAL("ccg._CAPI_TransferCCGTo_")
 .set_body([] (DGLArgs args, DGLRetValue* rv) {
     dgl::serialize::CCGData hg = args[0];
@@ -344,6 +348,19 @@ DGL_REGISTER_GLOBAL("ccg._CAPI_TransferCCGTo_")
     *rv = hg;
   });
 
+DGL_REGISTER_GLOBAL("ccg._CAPI_CCGNumEdges")
+.set_body([](DGLArgs args, DGLRetValue* rv) {
+  dgl::serialize::CCGData hg = args[0];
+  *rv = CCGNumEdges();
+});
+
+DGL_REGISTER_GLOBAL("ccg._CAPI_CCGOutDegrees")
+.set_body([](DGLArgs args, DGLRetValue* rv) {
+  dgl::serialize::CCGData hg = args[0];
+  IdArray vids = args[1];
+  *rv = CCGOutGegrees(vids);
+});
+
 DGL_REGISTER_GLOBAL("ccg._CAPI_CCGPinMemory_")
 .set_body([] (DGLArgs args, DGLRetValue* rv) {
     dgl::serialize::CCGData hg = args[0];
@@ -359,35 +376,5 @@ DGL_REGISTER_GLOBAL("ccg._CAPI_CCGUnpinMemory_")
     // hgindex->UnpinMemory_();
     *rv = hg;
   });
-
-DGL_REGISTER_GLOBAL("dataloading.dataloader._CAPI_AllocNextDoorDataOn")
-.set_body([](DGLArgs args, DGLRetValue *rv) {
-  dgl::serialize::CCGData ccg_data = args[0];
-  uint64_t seed_nodes_size = args[1];
-  IdArray fanouts_arr = args[2];
-  DGLContext ctx = args[3];
-  const auto& _fanouts = fanouts_arr.ToVector<int64_t>();
-
-  std::vector<int32_t> fanouts;
-  
-  for (auto f : _fanouts) {
-    fanouts.push_back(static_cast<int32_t>(f));
-  }
-  if (fanouts[0] == -1) { // CCGMultiLayerFullNeighborSampler
-    *rv = true;
-    return;
-  }
-  ccg_data->nextDoorData = new NextDoorData;
-
-  ccg_data->nextDoorData->setNumber(ccg_data->n_nodes, seed_nodes_size, fanouts);
-  
-  allocNextDoorDataOnDevice(*(ccg_data->nextDoorData), ctx);
-
-  setNextDoorData(ccg_data->nextDoorData,  ccg_data->gpu_ccg, ccg_data->curand_states);
-
-  // std::cout<<"Alloc NextDoorData done."<<std::endl;
-
-  *rv=true;
-});
 
 }  // namespace dgl

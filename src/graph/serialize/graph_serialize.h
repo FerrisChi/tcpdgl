@@ -26,7 +26,7 @@
 #include "../../c_api_common.h"
 #include "dglgraph_data.h"
 #include "heterograph_data.h"
-#include "../sampling/ccgsample/ccg_sample.h"
+#include "../sampling/ccgsample/nextdoor.h"
 
 using dgl::ImmutableGraph;
 using dgl::runtime::NDArray;
@@ -90,7 +90,7 @@ class CCGDataObject : public runtime::Object {
   std::vector<uint32_t> graph, offset;
   void* gpu_ccg;
   void* curand_states;
-  NextDoorData* nextDoorData;
+  dgl::NextDoorData* nextDoorData;
 
   CCGDataObject() {
     this->n_nodes = 0;

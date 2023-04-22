@@ -37,6 +37,7 @@ from ..utils import (
     recursive_apply_pair,
     set_num_threads,
     version,
+    pflogger
 )
 
 PYTORCH_VER = version.parse(torch.__version__)
@@ -592,9 +593,11 @@ class _PrefetchingIter(object):
             self._shutdown()
 
     def _next_non_threaded(self):
-        print('[PF] bg dataloader_it.next', time.time())
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            pflogger.info('bg dataloader_it.next %f', time.time())
         batch = next(self.dataloader_it)
-        print('[PF] ed dataloader_it.next', time.time())
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            pflogger.info('ed dataloader_it.next %f', time.time())
         batch = recursive_apply(
             batch, restore_parent_storage_columns, self.dataloader.graph
         )
@@ -620,7 +623,8 @@ class _PrefetchingIter(object):
         return batch, feats, stream_event
 
     def __next__(self):
-        print('[PF] bg dataloader.__next__', time.time())
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            pflogger.info('bg dataloader.__next__ %f', time.time())
         batch, feats, stream_event = (
             self._next_non_threaded()
             if not self.use_thread
@@ -629,7 +633,8 @@ class _PrefetchingIter(object):
         batch = recursive_apply_pair(batch, feats, _assign_for)
         if stream_event is not None:
             stream_event.wait()
-        print('[PF] ed dataloader.__next__', time.time())
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            pflogger.info('ed dataloader.__next__ %f', time.time())
         return batch
 
 
@@ -1361,8 +1366,7 @@ class CCGDataLoader(torch.utils.data.DataLoader):
         fanouts = torch.tensor(list(reversed(graph_sampler.fanouts)))
         
         # print('[PF] bg py_alloc_data', time.time())
-        if hasattr(self.graph, "ccg"):
-            _CAPI_AllocNextDoorDataOn(self.graph.ccg.ccg_data, batch_size, F.to_dgl_nd(fanouts), self.graph.ccg.ctx)
+        self.graph_sampler.init_nextdoor(self.graph.ccg, batch_size, F.to_dgl_nd(fanouts), F.context(self.graph))
         # elif hasattr(self.graph, "ccg_data"):
         #     _CAPI_AllocNextDoorDataOn(self.graph.ccg_data, batch_size, F.to_dgl_nd(fanouts))
         # print('[PF] ed py_alloc_data', time.time())
@@ -1455,9 +1459,11 @@ class _CCGPrefetchingIter(object):
 
     # @profile
     def _next_non_threaded(self):
-        print('[PF] bg dataloader_it.next', time.time())
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            pflogger.info('bg dataloader_it.next %f', time.time())
         batch = next(self.dataloader_it)
-        print('[PF] ed dataloader_it.next', time.time())
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            pflogger.info('ed dataloader_it.next %f', time.time())
         batch = recursive_apply(
             batch, restore_parent_storage_columns, self.dataloader.graph
         )
@@ -1468,7 +1474,8 @@ class _CCGPrefetchingIter(object):
 
     # @profile
     def __next__(self):
-        print('[PF] bg dataloader.__next__', time.time())
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            pflogger.info('bg dataloader.__next__ %f', time.time())
         batch, feats, stream_event = (
             self._next_non_threaded()
             if not self.use_thread
@@ -1477,7 +1484,8 @@ class _CCGPrefetchingIter(object):
         batch = recursive_apply_pair(batch, feats, _assign_for)
         if stream_event is not None:
             stream_event.wait()
-        print('[PF] ed dataloader.__next__', time.time())
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            pflogger.info('ed dataloader.__next__ %f', time.time())
         # traceback.print_stack()
         return batch # (input_nodes, output_nodes, blocks)
 

@@ -14,10 +14,11 @@
 #include <curand_kernel.h>
 #include <dgl/runtime/device_api.h>
 
-#include "./ccg.cuh"
 #include <dgl/sampling/rand_num_gen.cuh>
 #include <dgl/aten/coo.h>
 #include <dgl/runtime/c_runtime_api.h>
+#include "./ccg.cuh"
+#include "./nextdoor.h"
 
 namespace dgl {
 
@@ -27,53 +28,6 @@ const bool useSubWarpKernel = false;
 const bool useThreadBlockKernel = true;
 const bool combineTwoSampleStores = false;
 const bool enableLoadBalancing = false;
-
-class CCGSample {};
-
-struct NextDoorData {
-  std::vector<CCGSample> samples;
-  std::vector<VertexID_t> initialContents;
-  std::vector<VertexID_t> initialTransitToSampleValues;
-  std::vector<int> devices;
-
-  //Per Device Data.
-  std::vector<CCGSample*> dOutputSamples;
-  std::vector<VertexID_t*> dSamplesToTransitMapKeys;
-  std::vector<VertexID_t*> dSamplesToTransitMapValues;
-  std::vector<VertexID_t*> dTransitToSampleMapKeys;
-  std::vector<VertexID_t*> dTransitToSampleMapValues;
-  std::vector<EdgePos_t*> dSampleInsertionPositions;
-  std::vector<EdgePos_t*> dNeighborhoodSizes;
-  std::vector<curandState*> dCurandStates;
-  std::vector<size_t> maxThreadsPerKernel;
-  std::vector<VertexID_t*> dFinalSamples;
-  // std::vector<VertexID_t*> dInitialSamples;
-  VertexID_t INVALID_VERTEX;
-  int maxBits;
-  // std::vector<GPUBCGPartition> gpuBCGPartitions;
-
-  VertexID_t n_nodes;
-  EdgePos_t n_edges;
-  VertexID_t sampleNum;
-  int maxNeighborsToSample;
-  int finalSampleSize;
-  size_t totalMaxNeighbor;
-  size_t totalFinalSample; 
-
-  void setNumber(VertexID_t _n_nodes, VertexID_t _sampleNum, const std::vector<int> &fanouts) {
-    n_nodes = _n_nodes;
-    sampleNum = _sampleNum;
-    maxNeighborsToSample = 1;
-    finalSampleSize = 0;
-    for (auto fanout : fanouts) {
-      maxNeighborsToSample *= (fanout + 1); // save src nodes in result
-      finalSampleSize += maxNeighborsToSample;
-    }
-    totalMaxNeighbor = 1ll * sampleNum * maxNeighborsToSample;
-    totalFinalSample = 1ll * sampleNum * finalSampleSize;
-    return;
-  }
-};
 
 struct FullLayersData {
   dgl::NDArray d_picked_row, d_picked_col, d_picked_idx;
@@ -393,6 +347,11 @@ std::pair<dgl::aten::COOMatrix, FloatArray> CCGLaborSampling(
     int importance_sampling,
     IdArray random_seed,
     IdArray NIDs);
+
+EdgePos_t CCGNumEdges();
+DegreeArray CCGOutGegrees(IdArray vids);
+
+IdArray CCGRandomWalk(uint64_t n_nodes, void *gpu_ccg, NextDoorData *nextDoorData, IdArray seeds, int64_t length);
 
 // }  // namespace sampling
 }  // namespace dgl

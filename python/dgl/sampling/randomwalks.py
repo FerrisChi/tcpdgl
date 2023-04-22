@@ -5,7 +5,7 @@ from .. import backend as F, ndarray as nd, utils
 from .._ffi.function import _init_api
 from ..base import DGLError
 
-__all__ = ["random_walk", "pack_traces"]
+__all__ = ["random_walk", "pack_traces", "ccg_random_walk"]
 
 
 def random_walk(
@@ -224,6 +224,79 @@ def random_walk(
     types = F.from_dgl_nd(types)
     eids = F.from_dgl_nd(eids)
     return (traces, eids, types) if return_eids else (traces, types)
+
+def ccg_random_walk(
+    g,
+    nodes,
+    nextdoorptr,
+    *,
+    metapath=None,
+    length=None,
+    prob=None,
+    restart_prob=None,
+    return_eids=False
+):
+    n_etypes = len(g.canonical_etypes)
+    n_ntypes = len(g.ntypes)
+
+    if metapath is None:
+        if n_etypes > 1 or n_ntypes > 1:
+            raise DGLError(
+                "metapath not specified and the graph is not homogeneous."
+            )
+        if length is None:
+            raise ValueError(
+                "Please specify either the metapath or the random walk length."
+            )
+        metapath = [0] * length
+    else:
+        raise ValueError('Do not support argc: metapath.')
+        metapath = [g.get_etype_id(etype) for etype in metapath]
+
+    gdata = g.ccg.ccg_data
+    nodes = utils.prepare_tensor(g, nodes, "nodes")
+    nodes = F.to_dgl_nd(nodes)
+    # (Xin) Since metapath array is created by us, safe to skip the check
+    #       and keep it on CPU to make max_nodes sanity check easier.
+    metapath = F.to_dgl_nd(F.astype(F.tensor(metapath), g.idtype))
+
+    # Load the probability tensor from the edge frames
+    ctx = utils.to_dgl_context(g.device)
+    print(f'ctx: {ctx}')
+    if prob is None:
+        p_nd = [nd.array([], ctx=ctx) for _ in g.canonical_etypes]
+    else:
+        raise ValueError('Do not support argc: prob.')
+        p_nd = []
+        for etype in g.canonical_etypes:
+            if prob in g.edges[etype].data:
+                prob_nd = F.to_dgl_nd(g.edges[etype].data[prob])
+            else:
+                prob_nd = nd.array([], ctx=ctx)
+            p_nd.append(prob_nd)
+
+    if return_eids:
+        raise ValueError('Do not support argc: return_eids.')
+
+    # Actual random walk
+    if restart_prob is None:
+        traces = _CAPI_CCGSamplingRandomWalk(gdata, nodes, length, nextdoorptr)
+    elif F.is_tensor(restart_prob):
+        raise ValueError('Do not support random walk with stepwise restart.')
+        restart_prob = F.to_dgl_nd(restart_prob)
+        traces, eids, types = _CAPI_DGLSamplingRandomWalkWithStepwiseRestart(
+            gidx, nodes, metapath, p_nd, restart_prob
+        )
+    elif isinstance(restart_prob, float):
+        raise ValueError("Do not support random walk with restart.")
+        traces, eids, types = _CAPI_DGLSamplingRandomWalkWithRestart(
+            gidx, nodes, metapath, p_nd, restart_prob
+        )
+    else:
+        raise TypeError("restart_prob should be float or Tensor.")
+
+    traces = F.from_dgl_nd(traces)
+    return traces
 
 
 def pack_traces(traces, types):

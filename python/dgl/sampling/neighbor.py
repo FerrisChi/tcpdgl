@@ -6,6 +6,8 @@ from ..transforms.to_block import to_block
 from ..base import DGLError, EID, NID
 from ..heterograph import DGLGraph
 from .utils import EidExcluder
+from ..utils import pflogger
+import torch.distributed as dist
 
 import time
 
@@ -451,6 +453,8 @@ def _sample_neighbors(
             else:
                 excluded_edges_all_t.append(nd.array([], ctx=ctx))
 
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        pflogger.info('bg sample.capi %f', time.time())
     subgidx = _CAPI_DGLSampleNeighbors(
         g._graph,
         nodes_all_types,
@@ -460,6 +464,9 @@ def _sample_neighbors(
         excluded_edges_all_t,
         replace,
     )
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        pflogger.info('ed sample.capi %f', time.time())
+
     induced_edges = subgidx.induced_edges
     ret = DGLGraph(subgidx.graph, g.ntypes, g.etypes)
 
@@ -835,13 +842,15 @@ def select_topk(
 
 DGLGraph.select_topk = utils.alias_func(select_topk)
 
-def ccg_sample_neighbors(g, seed_nodes, fanouts,
+def ccg_sample_neighbors(g, seed_nodes, fanouts, nextdoorptr,
                          copy_ndata=True, copy_edata=True, output_device=None):
-    print('[PF] bg sample.capi', time.time())
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        pflogger.info('bg sample.capi %f', time.time())
     fanouts_array = F.tensor(fanouts, dtype=F.int64).flip(0)
-    subgidices = _CAPI_CCGSampleNeighbors(g.ccg.ccg_data, F.to_dgl_nd(seed_nodes), F.to_dgl_nd(fanouts_array))
-    print('[PF] ed sample.capi', time.time())
-    
+    subgidices = _CAPI_CCGSampleNeighbors(g.ccg.ccg_data, F.to_dgl_nd(seed_nodes), F.to_dgl_nd(fanouts_array), nextdoorptr)
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        pflogger.info('ed sample.capi %f', time.time())
+        
     output_nodes = seed_nodes
 
     blocks = []
@@ -864,13 +873,14 @@ def ccg_sample_neighbors(g, seed_nodes, fanouts,
         # print('[PF] ed sample.copy_data_{}'.format(fanout), time.time())
 
         eid = subg.edata[EID]
-        print('[PF] bg sample.to_block', time.time())
+        # if not dist.is_initialized() or dist.get_rank() == 0:
+        #     pflogger.info('bg sample.to_block %f', time.time())
         block = to_block(subg, seed_nodes)
         block.edata[EID] = eid
         seed_nodes = block.srcdata['_ID']
         blocks.insert(0, block)
-        # print(f'block_{i}:', block)
-        print('[PF] ed sample.to_block', time.time())
+        # if not dist.is_initialized() or dist.get_rank() == 0:
+        #     pflogger.info('ed sample.to_block %f', time.time())
         i+=1
 
     return seed_nodes, output_nodes, blocks
@@ -880,14 +890,17 @@ DGLGraph.ccg_sample_neighbors = utils.alias_func(ccg_sample_neighbors)
 def ccg_sample_full_neighbors(g, seed_nodes, num_layers,
                          copy_ndata=True, copy_edata=True, output_device=None):
     # print(f'ccg_sample_neighbors seed_nodes: ',seed_nodes.device)
+    
     print('[PF] bg sample_neighbors', time.time())
     # print('[PF] bg seed_node_to_cuda', time.time())
     seed_nodes = seed_nodes.to('cuda:0')
     # print('[PF] ed seed_node_to_cuda', time.time())
 
-    print('[PF] bg sample.capi', time.time())
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        pflogger.info('bg sample.capi %f', time.time())
     subgidices = _CAPI_CCGFullLayerNeighbors(g.ccg.ccg_data, F.to_dgl_nd(seed_nodes), num_layers)
-    print('[PF] ed sample.capi', time.time())
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        pflogger.info('ed sample.capi %f', time.time())
     
     output_nodes = seed_nodes
 
@@ -896,7 +909,7 @@ def ccg_sample_full_neighbors(g, seed_nodes, num_layers,
     for subgidx in subgidices:
         print('[PF] bg get_subg_{}'.format(i), time.time())
         induced_edges = subgidx.induced_edges
-        subg = DGLHeteroGraph(subgidx.graph)
+        subg = DGLGraph(subgidx.graph)
         print('[PF] ed get_subg_{}'.format(i), time.time())
 
         print('[PF] bg copy_data_{}'.format(i), time.time())

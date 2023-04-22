@@ -15,7 +15,7 @@ from .heterograph_serialize import HeteroGraphData
 
 _init_api("dgl.data.graph_serialize")
 
-__all__ = ["save_graphs", "load_graphs", "load_labels"]
+__all__ = ["save_graphs", "load_graphs", "load_labels", "load_ccg_for", "load_feat", "save_feat"]
 
 
 @register_object("graph_serialize.StorageMetaData")

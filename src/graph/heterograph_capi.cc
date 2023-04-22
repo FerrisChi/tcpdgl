@@ -17,6 +17,8 @@
 #include "./heterograph.h"
 #include "unit_graph.h"
 
+#include <cuda_runtime_api.h>
+
 using namespace dgl::runtime;
 
 namespace dgl {

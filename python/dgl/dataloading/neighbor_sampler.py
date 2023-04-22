@@ -3,7 +3,16 @@ from ..base import EID, NID
 from ..transforms import to_block
 from .base import BlockSampler
 from dgl.sampling.neighbor import ccg_sample_neighbors, ccg_sample_full_neighbors
+from dgl.sampling.randomwalks import ccg_random_walk, random_walk
+
 import time
+import torch
+import torch.distributed as dist
+from ..utils import pflogger
+from .. import backend as F, utils
+from .._ffi.function import _init_api
+
+_init_api("dgl.dataloading.neighbor_sampler")
 
 class NeighborSampler(BlockSampler):
     """Sampler that builds computational dependency of node representations via
@@ -210,11 +219,18 @@ class CCGNeighborSampler(BlockSampler):
                          output_device=output_device)
         self.fanouts = fanouts
 
+    def init_nextdoor(self, ccg, batch_size, fanout, ctx):
+        if isinstance(ctx, torch.device):
+            ctx = utils.to_dgl_context(ctx)
+        self.nextdoorptr = _CAPI_AllocNextDoorData(ccg.ccg_data, batch_size, fanout, ctx.device_type, ctx.device_id)
+
     def sample_blocks(self, g, seed_nodes, exclude_eids=None):
         # g is ccg graph here
-        print('[PF] bg sampler.sample_blocks', time.time())
-        seed_nodes, output_nodes, sample_blocks = g.ccg_sample_neighbors(seed_nodes, self.fanouts, copy_ndata=False, copy_edata=True)
-        print('[PF] ed sampler.sample_blocks', time.time())
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            pflogger.info('bg sampler.sample_blocks %f', time.time())
+        seed_nodes, output_nodes, sample_blocks = g.ccg_sample_neighbors(seed_nodes, self.fanouts, self.nextdoorptr, copy_ndata=False, copy_edata=True)
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            pflogger.info('ed sampler.sample_blocks %f', time.time())
         return seed_nodes, output_nodes, sample_blocks
 
 class CCGMultiLayerFullNeighborSampler(BlockSampler):
@@ -228,9 +244,47 @@ class CCGMultiLayerFullNeighborSampler(BlockSampler):
         self.num_layers = num_layers
         self.fanouts = [-1] * num_layers
 
+    def init_nextdoor(self, ccg, batch_size, fanout, ctx):
+        if isinstance(ctx, torch.device):
+            ctx = utils.to_dgl_context(ctx)
+        self.nextdoorptr = _CAPI_AllocNextDoorData(ccg.ccg_data, batch_size, fanout, ctx.device_type, ctx.device_id)
+
     def sample_blocks(self, g, seed_nodes, exclude_eids=None):
         # g is ccg graph here
-        print('[PF] bg sampler.sample_blocks', time.time())
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            pflogger.info('bg sampler.sample_blocks %f', time.time())
         seed_nodes, output_nodes, sample_blocks = g.ccg_sample_full_neighbors(seed_nodes, self.num_layers, copy_ndata=False, copy_edata=True)
-        print('[PF] ed sampler.sample_blocks', time.time())
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            pflogger.info('ed sampler.sample_blocks %f', time.time())
         return seed_nodes, output_nodes, sample_blocks
+    
+class DeepwalkSampler(object):
+    def __init__(self, G, seeds, batch_size, walk_length, ccg_sample):
+        """random walk sampler
+
+        Parameter
+        ---------
+        G dgl.Graph : the input graph
+        seeds torch.LongTensor : starting nodes
+        walk_length int : walk length
+        """
+        self.G = G
+        self.seeds = seeds
+        self.batch_size = batch_size
+        self.walk_length = walk_length
+        self.ccg_sampe = ccg_sample
+        if self.ccg_sampe:
+            import torch
+            self.init_nextdoor(batch_size, F.to_dgl_nd(torch.tensor([walk_length])), F.context(self.seeds))
+    
+    def init_nextdoor(self, batch_size, fanout, ctx):
+        if isinstance(ctx, torch.device):
+            ctx = utils.to_dgl_context(ctx)
+        self.nextdoorptr = _CAPI_AllocNextDoorData(self.G.ccg.ccg_data, batch_size, fanout, ctx.device_type, ctx.device_id)
+
+    def sample(self, seeds):
+        if self.ccg_sampe:
+            walks = ccg_random_walk(self.G.ccg, seeds, self.nextdoorptr, length=self.walk_length - 1)[0]
+        else:
+            walks = random_walk(self.G, seeds, length=self.walk_length - 1)[0]
+        return walks

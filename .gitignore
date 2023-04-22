@@ -1,4 +1,6 @@
 result/
+log/
+*.pt
 
 # IDE
 .idea
@@ -159,7 +161,7 @@ cscope.*
 
 # vscode
 .clangd
-.vscode
+.vscode/
 
 # asv
 .asv

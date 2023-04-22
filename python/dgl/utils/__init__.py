@@ -6,6 +6,7 @@ from .filter import *
 from .internal import *
 from .pin_memory import *
 from .shared_mem import *
+from .log import *
 
 try:
     from packaging import version

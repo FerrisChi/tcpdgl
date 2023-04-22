@@ -1,6 +1,9 @@
 #ifndef __CCG_HPP__
 #define __CCG_HPP__
 
+#include <cuda.h>
+#include <cuda_runtime.h>
+
 typedef int64_t VertexID_t;
 typedef int64_t EdgePos_t;
 typedef uint32_t Graph_t;

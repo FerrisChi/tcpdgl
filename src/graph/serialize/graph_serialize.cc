@@ -47,6 +47,8 @@
 #include <utility>
 #include <vector>
 
+#include "../sampling/ccgsample/ccg_sample.h"
+
 using namespace dgl::runtime;
 
 using dgl::COO;
@@ -200,4 +202,36 @@ DGL_REGISTER_GLOBAL("data.graph_serialize._CAPI_LoadFeat")
   
 
 }  // namespace serialize
+
+DGL_REGISTER_GLOBAL("dataloading.neighbor_sampler._CAPI_AllocNextDoorData")
+.set_body([](DGLArgs args, DGLRetValue *rv) {
+  serialize::CCGData ccg_data = args[0];
+  uint64_t seed_nodes_size = args[1];
+  IdArray fanouts_arr = args[2];
+  const int device_type = args[3];
+  const int device_id = args[4];
+  DGLContext ctx;
+  ctx.device_type = static_cast<DGLDeviceType>(device_type);
+  ctx.device_id = device_id;
+
+  const auto& _fanouts = fanouts_arr.ToVector<int64_t>();
+  std::vector<int32_t> fanouts;
+  for (auto f : _fanouts) {
+    fanouts.push_back(static_cast<int32_t>(f));
+  }
+  if (fanouts[0] == -1) { // CCGMultiLayerFullNeighborSampler
+    *rv = true;
+    return;
+  }
+
+  ccg_data->nextDoorData = new NextDoorData;
+  ccg_data->nextDoorData->setNumber(ccg_data->n_nodes, seed_nodes_size, fanouts);  
+  allocNextDoorDataOnDevice(*(ccg_data->nextDoorData), ctx);
+  setNextDoorData(ccg_data->nextDoorData, ccg_data->gpu_ccg, ccg_data->curand_states);
+
+  // std::cout<<"Alloc NextDoorData done."<<std::endl;
+
+  *rv=true;
+});
+
 }  // namespace dgl

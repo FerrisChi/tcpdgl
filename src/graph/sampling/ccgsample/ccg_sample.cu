@@ -128,15 +128,6 @@ __host__ __device__ bool isValidSampledVertex(VertexID_t neighbor, VertexID_t In
   return neighbor != InvalidVertex && neighbor != -1;
 }
 
-// __global__
-// void setInitialOnGPU(VertexID_t* seed_nodes, int seed_num) {
-//   int tid = threadIdx.x + blockIdx.x * gridDim.x;
-//   if (tid < seed_num) {
-//     transitToSampleMapKeys[tid] = seed_nodes[i];
-//     dTransitToSampleMapValues[] = ;
-//     dOutputSamples[tid] = ;
-//   }
-// }
 
 void allocNextDoorDataOnDevice(NextDoorData &data, const DGLContext &ctx)
 {
@@ -276,7 +267,7 @@ void initializeNextDoorSample(NextDoorData &data, const IdArray &seed_nodes_arr,
   // std::cout << "seed_node_size " << seed_node_size << " data.sampleNum " << data.sampleNum << " data.n_nodes " << data.n_nodes << " tot_step " << tot_step << std::endl;
   // _outt = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch());
   // std::cout << "[PF] bg setGPUSeeds " << std::fixed << std::setprecision(7) << (double)(_outt.count() * 0.000001) << std::endl;
-  for (int deviceIdx = 0; deviceIdx < data.devices.size(); ++deviceIdx)
+  for (size_t deviceIdx = 0; deviceIdx < data.devices.size(); ++deviceIdx)
   {
     // CHK_CU(cudaSetDevice(deviceIdx));
     if (tot_step == 1)
@@ -356,6 +347,221 @@ void freeDeviceData(NextDoorData &data)
     if (sizeof(CCGSample) > 0)
       CHK_CU(cudaFree(data.dOutputSamples[deviceIdx]));
   }
+}
+
+// BCGPartition copyPartitionToGPU(uint64_t n_nodes, int ubl, const std::vector<uint32_t>& g_data, const std::vector<uint32_t>& g_offset, GPUBCGPartition& gpuBCGPartition, EdgePos_t *n_edges) {
+//   //TODO: Store gpuBCGPartition in Constant Memory
+//   auto size_offset = sizeof(Offset_t) * (n_nodes + 1);
+//   CHK_CU(cudaMalloc(&gpuBCGPartition.d_offset, size_offset));
+//   CHK_CU(cudaMalloc(&gpuBCGPartition.d_degoffset, sizeof(EdgePos_t) * (n_nodes + 1)));
+//   Graph_t *d_offset_data;
+//   CHK_CU(cudaMalloc(&d_offset_data, sizeof(Graph_t) * (g_offset.size())));
+//   CHK_CU(cudaMemcpy(d_offset_data, &(g_offset[0]), sizeof(Graph_t) * g_offset.size(), cudaMemcpyHostToDevice));
+
+//   decode_offset<<<min(8192L, n_nodes/256L), 256>>>(d_offset_data, gpuBCGPartition.d_offset, n_nodes, ubl);
+//   void     *d_temp_storage = NULL;
+//   size_t   temp_storage_bytes = 0;
+//   cub::DeviceScan::ExclusiveSum(d_temp_storage, temp_storage_bytes, gpuBCGPartition.d_offset, gpuBCGPartition.d_offset, n_nodes + 1);
+//   CHK_CU(cudaMalloc(&d_temp_storage, temp_storage_bytes));
+//   cub::DeviceScan::ExclusiveSum(d_temp_storage, temp_storage_bytes, gpuBCGPartition.d_offset, gpuBCGPartition.d_offset, n_nodes + 1);
+//   // CHK_CU(cudaFree(d_temp_storage));
+
+//   auto size_graph = sizeof(Graph_t) * g_data.size();
+//   CHK_CU(cudaMalloc(&gpuBCGPartition.d_graph, size_graph));
+//   CHK_CU(cudaMemcpy(gpuBCGPartition.d_graph, &(g_data[0]), size_graph, cudaMemcpyHostToDevice));
+
+//   printf("CCG Transfer %ld B to GPU. (%ldB graph, %ldB offset)\n", size_graph + sizeof(Graph_t) * g_offset.size(), size_graph, sizeof(Graph_t) * g_offset.size());
+
+//   set_deg<<<min(8192L, n_nodes/256L), 256>>>(gpuBCGPartition.d_degoffset, gpuBCGPartition.d_offset, gpuBCGPartition.d_graph, n_nodes);
+//   cub::DeviceScan::ExclusiveSum(d_temp_storage, temp_storage_bytes, gpuBCGPartition.d_degoffset, gpuBCGPartition.d_degoffset, n_nodes + 1);
+//   // d_temp_storage = nullptr;
+//   // CHK_CU(cudaMalloc(&d_temp_storage, temp_storage_bytes));
+//   // cub::DeviceScan::ExclusiveSum(d_temp_storage, temp_storage_bytes, gpuBCGPartition.d_degoffset, gpuBCGPartition.d_degoffset, n_nodes + 1);
+//   CHK_CU(cudaFree(d_temp_storage));
+//   BCGPartition device_bcg_partition = BCGPartition(gpuBCGPartition.d_graph, gpuBCGPartition.d_offset, gpuBCGPartition.d_degoffset, n_nodes);
+//   CHK_CU(cudaMemcpy(n_edges, gpuBCGPartition.d_degoffset + n_nodes, sizeof(EdgePos_t), cudaMemcpyDeviceToHost));
+
+//   return device_bcg_partition;
+// }
+
+// std::vector<GPUBCGPartition> transferToGPUs(NextDoorData& data, uint64_t n_nodes, int ubl, const std::vector<uint32_t>& g_data, const std::vector<uint32_t>& g_offset) {
+//   //Assume that whole graph can be stored in GPU Memory.
+//   //Hence, only one Graph Partition is created.
+//   std::vector<GPUBCGPartition> gpuBCGPartitions;
+//   //Copy full graph to GPU
+//   for (size_t device = 0; device < data.devices.size(); device++) {
+//     GPUBCGPartition gpuBCGPartition;
+//     CHK_CU(cudaSetDevice(data.devices[device]));
+//     BCGPartition deviceBCGPartition = copyPartitionToGPU(n_nodes, ubl, g_data, g_offset, gpuBCGPartition, &data.n_edges);
+//     gpuBCGPartition.d_bcg = (BCGPartition*)bcgPartitionBuff;
+//     CHK_CU(cudaMemcpyToSymbol(bcgPartitionBuff, &deviceBCGPartition, sizeof(BCGPartition)));
+//     gpuBCGPartitions.push_back(gpuBCGPartition);
+//   }
+//   return gpuBCGPartitions;
+// }
+
+__global__ void get_num_edges(EdgePos_t *num_edges) {
+  BCGPartition *bcg = (BCGPartition *)&bcgPartitionBuff[0];
+  num_edges[0] = bcg->n_edges;
+}
+
+EdgePos_t CCGNumEdges() {
+  EdgePos_t *d_num_edges, *num_edges;
+  CUDA_CALL(cudaMalloc(&d_num_edges, sizeof(EdgePos_t)));
+  num_edges = new EdgePos_t[1];
+  get_num_edges<<<1,1>>>(d_num_edges);
+  CUDA_CALL(cudaMemcpy(num_edges, d_num_edges, sizeof(EdgePos_t), cudaMemcpyDeviceToHost));
+  return *num_edges;
+}
+
+__global__ void set_deg(EdgePos_t *deg, Offset_t *offset, Graph_t *graph, VertexID_t n_nodes)
+{
+  for (VertexID_t v = threadIdx.x + blockIdx.x * blockDim.x; v < n_nodes; v += blockDim.x * gridDim.x)
+  {
+    auto bcgv = BCGVertex(graph, offset[v]);
+    deg[v] = bcgv.outd;
+  }
+  return;
+}
+
+__global__ void get_deg(const int64_t* vids, int64_t len, int64_t* deg)
+{
+  BCGPartition *bcg = (BCGPartition *)&bcgPartitionBuff[0];
+  for (VertexID_t i = threadIdx.x + blockIdx.x * blockDim.x; i < len; i += blockDim.x * gridDim.x)
+  {
+    int64_t v = vids[i];
+    assert(v>=0 && v<bcg->n_nodes);
+    deg[i] = bcg->degoffset[v+1] - bcg->degoffset[v];
+  }
+}
+
+DegreeArray CCGOutGegrees(IdArray vids)
+{
+  const auto len = vids->shape[0];
+  const int64_t* vid_data = static_cast<int64_t*>(vids->data);
+  DegreeArray rst = DegreeArray::Empty({len}, vids->dtype, vids->ctx);
+  int64_t* rst_data = static_cast<int64_t*>(rst->data);
+  get_deg<<<min(8192L, (len + 255L) / 256L), 256>>>(vid_data, (int64_t)len, rst_data);
+  return rst;
+}
+
+__global__ void decode_offset(Graph_t *offset_data, Offset_t *offset, VertexID_t n_nodes, uint8_t ubl)
+{
+  VertexID_t tid = threadIdx.x + blockIdx.x * blockDim.x;
+  for (VertexID_t gos = 0; gos < n_nodes; gos += blockDim.x * gridDim.x)
+  {
+    VertexID_t u = gos + tid;
+    if (u < n_nodes)
+    {
+      Offset_t tmp = 1ll * u * ubl;
+      // auto type_id = tmp / GRAPH_LEN - sm_os;
+      Offset_t type_id = tmp / GRAPH_LEN;
+      int16_t bit_offset = tmp - type_id * GRAPH_LEN, bit_len = ubl;
+      tmp = (offset_data[type_id] << bit_offset) >> max(GRAPH_LEN - bit_len, bit_offset);
+      bit_len -= (GRAPH_LEN - bit_offset);
+
+      if (bit_len > 0)
+      {
+        tmp = (tmp << min(bit_len, 32)) | (offset_data[type_id + 1] >> max(GRAPH_LEN - bit_len, 0));
+        bit_len -= GRAPH_LEN;
+        if (bit_len > 0)
+        {
+          tmp = (tmp << min(bit_len, 32)) | (offset_data[type_id + 2] >> max(GRAPH_LEN - bit_len, 0));
+        }
+      }
+      offset[u] = tmp;
+    }
+  }
+  return;
+}
+
+BCGPartition copyPartitionToGPU(uint64_t n_nodes, int ubl, const std::vector<uint32_t> &g_data, const std::vector<uint32_t> &g_offset, GPUBCGPartition *gpuBCGPartition, const DGLContext &ctx)
+{
+  auto size_offset = sizeof(Offset_t) * (n_nodes + 1);
+  auto device = runtime::DeviceAPI::Get(ctx);
+  cudaStream_t stream = runtime::getCurrentCUDAStream();
+  
+  gpuBCGPartition->d_offset = static_cast<Offset_t *>(device->AllocDataSpace(ctx, size_offset, sizeof(Offset_t), DGLDataType{kDGLUInt, 64, 1}));
+  // CHK_CU(cudaMalloc(&(gpuBCGPartition->d_offset), size_offset));
+  gpuBCGPartition->d_degoffset = static_cast<EdgePos_t *>(device->AllocDataSpace(ctx, sizeof(EdgePos_t) * (n_nodes + 1), sizeof(EdgePos_t), DGLDataType{kDGLInt, 64, 1}));
+  // CHK_CU(cudaMalloc(&(gpuBCGPartition->d_degoffset), sizeof(EdgePos_t) * (n_nodes + 1)));
+  gpuBCGPartition->d_deg = static_cast<EdgePos_t *>(device->AllocDataSpace(ctx, sizeof(EdgePos_t) * (n_nodes + 1), sizeof(EdgePos_t), DGLDataType{kDGLInt, 64, 1}));
+  // CHK_CU(cudaMalloc(&(gpuBCGPartition->d_deg), sizeof(E·dgePos_t) * (n_nodes + 1)));
+  // cudaDeviceSynchronize();
+  Graph_t *d_offset_data;
+  d_offset_data = static_cast<Graph_t *>(device->AllocWorkspace(ctx, sizeof(Graph_t) * (g_offset.size()), DGLDataType{kDGLUInt, 32, 1}));
+  // CHK_CU(cudaMalloc(&d_offset_data, sizeof(Graph_t) * (g_offset.size())));
+
+  device->CopyDataFromTo(&(g_offset[0]), 0, d_offset_data, 0, sizeof(Graph_t) * g_offset.size(), DGLContext{kDGLCPU, 0}, ctx, DGLDataType{kDGLUInt, 32, 1});
+  // CHK_CU(cudaMemcpy(d_offset_data, &(g_offset[0]), sizeof(Graph_t) * g_offset.size(), cudaMemcpyHostToDevice));
+  // cudaDeviceSynchronize();
+  device->StreamSync(ctx, stream);
+  decode_offset<<<min(8192L, n_nodes / 256L), 256>>>(d_offset_data, gpuBCGPartition->d_offset, n_nodes, ubl);
+  
+  void *d_temp_storage = NULL;
+  size_t temp_storage_bytes = 0;
+  cub::DeviceScan::ExclusiveSum(d_temp_storage, temp_storage_bytes, gpuBCGPartition->d_offset, gpuBCGPartition->d_offset, n_nodes + 1);
+  d_temp_storage = device->AllocWorkspace(ctx, temp_storage_bytes);
+  // CHK_CU(cudaMalloc(&d_temp_storage, temp_storage_bytes));
+  cub::DeviceScan::ExclusiveSum(d_temp_storage, temp_storage_bytes, gpuBCGPartition->d_offset, gpuBCGPartition->d_offset, n_nodes + 1);
+  // std::cout<<temp_storage_bytes<<" "<<d_temp_storage<<std::endl;
+  auto size_graph = sizeof(Graph_t) * g_data.size();
+  gpuBCGPartition->d_graph = static_cast<Graph_t*> (device->AllocDataSpace(ctx, size_graph, sizeof(Graph_t), DGLDataType{kDGLUInt, 32, 1}));
+  // CHK_CU(cudaMalloc(&(gpuBCGPartition->d_graph), size_graph));
+  device->CopyDataFromTo(&(g_data[0]), 0, gpuBCGPartition->d_graph, 0, size_graph, DGLContext{kDGLCPU, 0}, ctx, DGLDataType{kDGLUInt, 0});
+  // CHK_CU(cudaMemcpy(gpuBCGPartition->d_graph, &(g_data[0]), size_graph, cudaMemcpyHostToDevice));
+
+  set_deg<<<min(8192L, (n_nodes + 255L) / 256L), 256>>>(gpuBCGPartition->d_deg, gpuBCGPartition->d_offset, gpuBCGPartition->d_graph, n_nodes);
+  cub::DeviceScan::ExclusiveSum(d_temp_storage, temp_storage_bytes, gpuBCGPartition->d_deg, gpuBCGPartition->d_degoffset, n_nodes + 1);
+
+  device->FreeWorkspace(ctx, d_temp_storage);
+  // CHK_CU(cudaFree(d_temp_storage));
+  EdgePos_t n_edges;
+  device->CopyDataFromTo(gpuBCGPartition->d_degoffset, n_nodes * sizeof(EdgePos_t), &n_edges, 0, sizeof(EdgePos_t), ctx, DGLContext{kDGLCPU, 0}, DGLDataType{kDGLInt, 64, 1});
+  // CHK_CU(cudaMemcpy(&n_edges, gpuBCGPartition->d_degoffset + n_nodes, sizeof(EdgePos_t), cudaMemcpyDeviceToHost));
+
+  BCGPartition device_bcg_partition = BCGPartition(gpuBCGPartition->d_graph, gpuBCGPartition->d_offset, gpuBCGPartition->d_degoffset, n_nodes, n_edges);
+
+  // force sync
+  device->StreamSync(ctx, stream);
+  std::cout << "CCG (" << size_graph + sizeof(Graph_t) * g_offset.size() << "B, " << size_graph << "B for graph, " << sizeof(Graph_t) * g_offset.size() << "B for offset) loaded and transfered to GPU, including " << n_nodes << " vertices and " << n_edges << " edges." << std::endl;
+
+  return device_bcg_partition;
+}
+
+void *InitCurand(const DGLContext &ctx)
+{
+  curandState_t *ret;
+  auto device = runtime::DeviceAPI::Get(ctx);
+
+  // size_t free, free1, tot;
+  // CUDA_CALL(cudaMemGetInfo(&free, &tot));
+
+  ret = static_cast<curandState_t*>(device->AllocDataSpace(ctx, CCGCurandNum * sizeof(curandState_t), alignof(curandState_t), DGLDataType{kBytes, sizeof(curandState_t), 1}));
+  CHK_CU(cudaMalloc(&ret, CCGCurandNum * sizeof(curandState_t)));
+  init_curand_states<<<utils::thread_block_size(CCGCurandNum, 256UL), 256UL>>>(ret, CCGCurandNum);
+  CHK_CU(cudaDeviceSynchronize());
+
+  // CUDA_CALL(cudaMemGetInfo(&free1, &tot));
+  // std::cout << "[PF] stat InitCurand "<< (free-free1)/1024/1024 << std::endl;
+  // device->StreamSync(ctx, stream);
+  return (void *)ret;
+}
+
+void *CCGCopyTo(uint64_t n_nodes, int ubl, const std::vector<uint32_t> &g_data, const std::vector<uint32_t> &g_offset, const DGLContext &ctx)
+{
+  size_t free, free1, tot;
+  CUDA_CALL(cudaMemGetInfo(&free, &tot));
+
+  GPUBCGPartition *gpuBCGPartition = new GPUBCGPartition;
+  BCGPartition deviceBCGPartition = copyPartitionToGPU(n_nodes, ubl, g_data, g_offset, gpuBCGPartition, ctx);
+
+  CUDA_CALL(cudaMemcpyToSymbol(bcgPartitionBuff, &deviceBCGPartition, sizeof(BCGPartition)));
+  gpuBCGPartition->d_bcg = (BCGPartition *)bcgPartitionBuff;
+
+  CUDA_CALL(cudaMemGetInfo(&free1, &tot));
+  std::cout << "[PF] stat CCG_gpu "<< (free-free1)/1024/1024 << std::endl;
+  return (void *)gpuBCGPartition;
 }
 
 __global__ void invalidVertexStartPos(int step, VertexID_t *transitToSamplesKeys, size_t totalTransits,
@@ -750,185 +956,6 @@ __global__ void samplingKernel(const int step, const size_t threadsExecuted, con
     out_cols[insertionPos] = neighbor != -1 ? neighbor : invalidVertex;
     out_idxs[insertionPos] = neighbor != -1 ? neighbor_pos : -1;
   }
-}
-// BCGPartition copyPartitionToGPU(uint64_t n_nodes, int ubl, const std::vector<uint32_t>& g_data, const std::vector<uint32_t>& g_offset, GPUBCGPartition& gpuBCGPartition, EdgePos_t *n_edges) {
-//   //TODO: Store gpuBCGPartition in Constant Memory
-//   auto size_offset = sizeof(Offset_t) * (n_nodes + 1);
-//   CHK_CU(cudaMalloc(&gpuBCGPartition.d_offset, size_offset));
-//   CHK_CU(cudaMalloc(&gpuBCGPartition.d_degoffset, sizeof(EdgePos_t) * (n_nodes + 1)));
-//   Graph_t *d_offset_data;
-//   CHK_CU(cudaMalloc(&d_offset_data, sizeof(Graph_t) * (g_offset.size())));
-//   CHK_CU(cudaMemcpy(d_offset_data, &(g_offset[0]), sizeof(Graph_t) * g_offset.size(), cudaMemcpyHostToDevice));
-
-//   decode_offset<<<min(8192L, n_nodes/256L), 256>>>(d_offset_data, gpuBCGPartition.d_offset, n_nodes, ubl);
-//   void     *d_temp_storage = NULL;
-//   size_t   temp_storage_bytes = 0;
-//   cub::DeviceScan::ExclusiveSum(d_temp_storage, temp_storage_bytes, gpuBCGPartition.d_offset, gpuBCGPartition.d_offset, n_nodes + 1);
-//   CHK_CU(cudaMalloc(&d_temp_storage, temp_storage_bytes));
-//   cub::DeviceScan::ExclusiveSum(d_temp_storage, temp_storage_bytes, gpuBCGPartition.d_offset, gpuBCGPartition.d_offset, n_nodes + 1);
-//   // CHK_CU(cudaFree(d_temp_storage));
-
-//   auto size_graph = sizeof(Graph_t) * g_data.size();
-//   CHK_CU(cudaMalloc(&gpuBCGPartition.d_graph, size_graph));
-//   CHK_CU(cudaMemcpy(gpuBCGPartition.d_graph, &(g_data[0]), size_graph, cudaMemcpyHostToDevice));
-
-//   printf("CCG Transfer %ld B to GPU. (%ldB graph, %ldB offset)\n", size_graph + sizeof(Graph_t) * g_offset.size(), size_graph, sizeof(Graph_t) * g_offset.size());
-
-//   set_deg<<<min(8192L, n_nodes/256L), 256>>>(gpuBCGPartition.d_degoffset, gpuBCGPartition.d_offset, gpuBCGPartition.d_graph, n_nodes);
-//   cub::DeviceScan::ExclusiveSum(d_temp_storage, temp_storage_bytes, gpuBCGPartition.d_degoffset, gpuBCGPartition.d_degoffset, n_nodes + 1);
-//   // d_temp_storage = nullptr;
-//   // CHK_CU(cudaMalloc(&d_temp_storage, temp_storage_bytes));
-//   // cub::DeviceScan::ExclusiveSum(d_temp_storage, temp_storage_bytes, gpuBCGPartition.d_degoffset, gpuBCGPartition.d_degoffset, n_nodes + 1);
-//   CHK_CU(cudaFree(d_temp_storage));
-//   BCGPartition device_bcg_partition = BCGPartition(gpuBCGPartition.d_graph, gpuBCGPartition.d_offset, gpuBCGPartition.d_degoffset, n_nodes);
-//   CHK_CU(cudaMemcpy(n_edges, gpuBCGPartition.d_degoffset + n_nodes, sizeof(EdgePos_t), cudaMemcpyDeviceToHost));
-
-//   return device_bcg_partition;
-// }
-
-// std::vector<GPUBCGPartition> transferToGPUs(NextDoorData& data, uint64_t n_nodes, int ubl, const std::vector<uint32_t>& g_data, const std::vector<uint32_t>& g_offset) {
-//   //Assume that whole graph can be stored in GPU Memory.
-//   //Hence, only one Graph Partition is created.
-//   std::vector<GPUBCGPartition> gpuBCGPartitions;
-//   //Copy full graph to GPU
-//   for (size_t device = 0; device < data.devices.size(); device++) {
-//     GPUBCGPartition gpuBCGPartition;
-//     CHK_CU(cudaSetDevice(data.devices[device]));
-//     BCGPartition deviceBCGPartition = copyPartitionToGPU(n_nodes, ubl, g_data, g_offset, gpuBCGPartition, &data.n_edges);
-//     gpuBCGPartition.d_bcg = (BCGPartition*)bcgPartitionBuff;
-//     CHK_CU(cudaMemcpyToSymbol(bcgPartitionBuff, &deviceBCGPartition, sizeof(BCGPartition)));
-//     gpuBCGPartitions.push_back(gpuBCGPartition);
-//   }
-//   return gpuBCGPartitions;
-// }
-
-__global__ void set_deg(EdgePos_t *deg, Offset_t *offset, Graph_t *graph, VertexID_t n_nodes)
-{
-  for (VertexID_t v = threadIdx.x + blockIdx.x * blockDim.x; v < n_nodes; v += blockDim.x * gridDim.x)
-  {
-    auto bcgv = BCGVertex(graph, offset[v]);
-    deg[v] = bcgv.outd;
-  }
-  return;
-}
-
-__global__ void decode_offset(Graph_t *offset_data, Offset_t *offset, VertexID_t n_nodes, uint8_t ubl)
-{
-  VertexID_t tid = threadIdx.x + blockIdx.x * blockDim.x;
-  for (VertexID_t gos = 0; gos < n_nodes; gos += blockDim.x * gridDim.x)
-  {
-    VertexID_t u = gos + tid;
-    if (u < n_nodes)
-    {
-      Offset_t tmp = 1ll * u * ubl;
-      // auto type_id = tmp / GRAPH_LEN - sm_os;
-      Offset_t type_id = tmp / GRAPH_LEN;
-      int16_t bit_offset = tmp - type_id * GRAPH_LEN, bit_len = ubl;
-      tmp = (offset_data[type_id] << bit_offset) >> max(GRAPH_LEN - bit_len, bit_offset);
-      bit_len -= (GRAPH_LEN - bit_offset);
-
-      if (bit_len > 0)
-      {
-        tmp = (tmp << min(bit_len, 32)) | (offset_data[type_id + 1] >> max(GRAPH_LEN - bit_len, 0));
-        bit_len -= GRAPH_LEN;
-        if (bit_len > 0)
-        {
-          tmp = (tmp << min(bit_len, 32)) | (offset_data[type_id + 2] >> max(GRAPH_LEN - bit_len, 0));
-        }
-      }
-      offset[u] = tmp;
-    }
-  }
-  return;
-}
-
-BCGPartition copyPartitionToGPU(uint64_t n_nodes, int ubl, const std::vector<uint32_t> &g_data, const std::vector<uint32_t> &g_offset, GPUBCGPartition *gpuBCGPartition, const DGLContext &ctx)
-{
-  auto size_offset = sizeof(Offset_t) * (n_nodes + 1);
-  auto device = runtime::DeviceAPI::Get(ctx);
-  cudaStream_t stream = runtime::getCurrentCUDAStream();
-  
-  gpuBCGPartition->d_offset = static_cast<Offset_t *>(device->AllocDataSpace(ctx, size_offset, sizeof(Offset_t), DGLDataType{kDGLUInt, 64, 1}));
-  // CHK_CU(cudaMalloc(&(gpuBCGPartition->d_offset), size_offset));
-  gpuBCGPartition->d_degoffset = static_cast<EdgePos_t *>(device->AllocDataSpace(ctx, sizeof(EdgePos_t) * (n_nodes + 1), sizeof(EdgePos_t), DGLDataType{kDGLInt, 64, 1}));
-  // CHK_CU(cudaMalloc(&(gpuBCGPartition->d_degoffset), sizeof(EdgePos_t) * (n_nodes + 1)));
-  gpuBCGPartition->d_deg = static_cast<EdgePos_t *>(device->AllocDataSpace(ctx, sizeof(EdgePos_t) * (n_nodes + 1), sizeof(EdgePos_t), DGLDataType{kDGLInt, 64, 1}));
-  // CHK_CU(cudaMalloc(&(gpuBCGPartition->d_deg), sizeof(E·dgePos_t) * (n_nodes + 1)));
-  // cudaDeviceSynchronize();
-  Graph_t *d_offset_data;
-  d_offset_data = static_cast<Graph_t *>(device->AllocWorkspace(ctx, sizeof(Graph_t) * (g_offset.size()), DGLDataType{kDGLUInt, 32, 1}));
-  // CHK_CU(cudaMalloc(&d_offset_data, sizeof(Graph_t) * (g_offset.size())));
-
-  device->CopyDataFromTo(&(g_offset[0]), 0, d_offset_data, 0, sizeof(Graph_t) * g_offset.size(), DGLContext{kDGLCPU, 0}, ctx, DGLDataType{kDGLUInt, 32, 1});
-  // CHK_CU(cudaMemcpy(d_offset_data, &(g_offset[0]), sizeof(Graph_t) * g_offset.size(), cudaMemcpyHostToDevice));
-  // cudaDeviceSynchronize();
-  device->StreamSync(ctx, stream);
-  decode_offset<<<min(8192L, n_nodes / 256L), 256>>>(d_offset_data, gpuBCGPartition->d_offset, n_nodes, ubl);
-  
-  void *d_temp_storage = NULL;
-  size_t temp_storage_bytes = 0;
-  cub::DeviceScan::ExclusiveSum(d_temp_storage, temp_storage_bytes, gpuBCGPartition->d_offset, gpuBCGPartition->d_offset, n_nodes + 1);
-  d_temp_storage = device->AllocWorkspace(ctx, temp_storage_bytes);
-  // CHK_CU(cudaMalloc(&d_temp_storage, temp_storage_bytes));
-  cub::DeviceScan::ExclusiveSum(d_temp_storage, temp_storage_bytes, gpuBCGPartition->d_offset, gpuBCGPartition->d_offset, n_nodes + 1);
-  // std::cout<<temp_storage_bytes<<" "<<d_temp_storage<<std::endl;
-  auto size_graph = sizeof(Graph_t) * g_data.size();
-  gpuBCGPartition->d_graph = static_cast<Graph_t*> (device->AllocDataSpace(ctx, size_graph, sizeof(Graph_t), DGLDataType{kDGLUInt, 32, 1}));
-  // CHK_CU(cudaMalloc(&(gpuBCGPartition->d_graph), size_graph));
-  device->CopyDataFromTo(&(g_data[0]), 0, gpuBCGPartition->d_graph, 0, size_graph, DGLContext{kDGLCPU, 0}, ctx, DGLDataType{kDGLUInt, 0});
-  // CHK_CU(cudaMemcpy(gpuBCGPartition->d_graph, &(g_data[0]), size_graph, cudaMemcpyHostToDevice));
-
-  set_deg<<<min(8192L, (n_nodes + 255L) / 256L), 256>>>(gpuBCGPartition->d_deg, gpuBCGPartition->d_offset, gpuBCGPartition->d_graph, n_nodes);
-  cub::DeviceScan::ExclusiveSum(d_temp_storage, temp_storage_bytes, gpuBCGPartition->d_deg, gpuBCGPartition->d_degoffset, n_nodes + 1);
-
-  device->FreeWorkspace(ctx, d_temp_storage);
-  // CHK_CU(cudaFree(d_temp_storage));
-  EdgePos_t n_edges;
-  device->CopyDataFromTo(gpuBCGPartition->d_degoffset, n_nodes * sizeof(EdgePos_t), &n_edges, 0, sizeof(EdgePos_t), ctx, DGLContext{kDGLCPU, 0}, DGLDataType{kDGLInt, 64, 1});
-  // CHK_CU(cudaMemcpy(&n_edges, gpuBCGPartition->d_degoffset + n_nodes, sizeof(EdgePos_t), cudaMemcpyDeviceToHost));
-
-  BCGPartition device_bcg_partition = BCGPartition(gpuBCGPartition->d_graph, gpuBCGPartition->d_offset, gpuBCGPartition->d_degoffset, n_nodes, n_edges);
-
-  // force sync
-  device->StreamSync(ctx, stream);
-  std::cout << "CCG (" << size_graph + sizeof(Graph_t) * g_offset.size() << "B, " << size_graph << "B for graph, " << sizeof(Graph_t) * g_offset.size() << "B for offset) loaded and transfered to GPU, including " << n_nodes << " vertices and " << n_edges << " edges." << std::endl;
-
-  return device_bcg_partition;
-}
-
-void *InitCurand(const DGLContext &ctx)
-{
-  curandState_t *ret;
-  auto device = runtime::DeviceAPI::Get(ctx);
-
-  // size_t free, free1, tot;
-  // CUDA_CALL(cudaMemGetInfo(&free, &tot));
-
-  ret = static_cast<curandState_t*>(device->AllocDataSpace(ctx, CCGCurandNum * sizeof(curandState_t), alignof(curandState_t), DGLDataType{kBytes, sizeof(curandState_t), 1}));
-  CHK_CU(cudaMalloc(&ret, CCGCurandNum * sizeof(curandState_t)));
-  init_curand_states<<<utils::thread_block_size(CCGCurandNum, 256UL), 256UL>>>(ret, CCGCurandNum);
-  CHK_CU(cudaDeviceSynchronize());
-
-  // CUDA_CALL(cudaMemGetInfo(&free1, &tot));
-  // std::cout << "[PF] stat InitCurand "<< (free-free1)/1024/1024 << std::endl;
-  // device->StreamSync(ctx, stream);
-  return (void *)ret;
-}
-
-void *CCGCopyTo(uint64_t n_nodes, int ubl, const std::vector<uint32_t> &g_data, const std::vector<uint32_t> &g_offset, const DGLContext &ctx)
-{
-  size_t free, free1, tot;
-  CUDA_CALL(cudaMemGetInfo(&free, &tot));
-
-  GPUBCGPartition *gpuBCGPartition = new GPUBCGPartition;
-  BCGPartition deviceBCGPartition = copyPartitionToGPU(n_nodes, ubl, g_data, g_offset, gpuBCGPartition, ctx);
-
-  CUDA_CALL(cudaMemcpyToSymbol(bcgPartitionBuff, &deviceBCGPartition, sizeof(BCGPartition)));
-  gpuBCGPartition->d_bcg = (BCGPartition *)bcgPartitionBuff;
-
-  CUDA_CALL(cudaMemGetInfo(&free1, &tot));
-  std::cout << "[PF] stat CCG_gpu "<< (free-free1)/1024/1024 << std::endl;
-  return (void *)gpuBCGPartition;
 }
 
 template <int THREADS, bool COALESCE_CURAND_LOAD, bool HAS_EXPLICIT_TRANSITS>
@@ -1808,7 +1835,7 @@ std::vector<dgl::aten::COOMatrix> doTransitParallelSampling(NextDoorData &nextDo
           // auto device = nextDoorData.devices[deviceIdx];
           // CHK_CU(cudaSetDevice(device));
           const VertexID_t deviceSampleStartPtr = PartStartPointer(nextDoorData.sampleNum, deviceIdx, numDevices);
-          for (int threadsExecuted = 0; threadsExecuted < totalThreads[deviceIdx]; threadsExecuted += nextDoorData.maxThreadsPerKernel[deviceIdx])
+          for (unsigned long threadsExecuted = 0; threadsExecuted < totalThreads[deviceIdx]; threadsExecuted += nextDoorData.maxThreadsPerKernel[deviceIdx])
           {
             size_t currExecutionThreads = min((size_t)nextDoorData.maxThreadsPerKernel[deviceIdx], totalThreads[deviceIdx] - threadsExecuted);
             // std::cout<<"totalThreads: "<<totalThreads[deviceIdx]<<std::endl;
@@ -2417,6 +2444,26 @@ std::vector<dgl::aten::COOMatrix> CCGSampleNeighbors(uint64_t n_nodes, void *gpu
   return ret;
 }
 
+////////////////////////////////
+// Random walk sampling
+////////////////////////////////
+
+IdArray CCGRandomWalk(uint64_t n_nodes, void *gpu_ccg, NextDoorData *nextDoorData, IdArray seeds, int64_t trace_length)
+{
+  const auto& ctx = seeds->ctx;
+  auto device = runtime::DeviceAPI::Get(ctx);
+  int64_t num_seeds = seeds.NumElements();
+  // initializeNextDoorSample(nextDoorData, seeds, (int)trace_length);
+  IdArray traces = IdArray::Empty({num_seeds, trace_length}, seeds->dtype, ctx);
+  // auto ret = doTransitParallelSampling(nextDoorData, length, ctx);
+  return traces;
+}
+
+
+////////////////////////////////
+// Full Layer sampling
+////////////////////////////////
+
 __global__ void initializeFullLayersSample(VertexID_t *seed_nodes, VertexID_t seed_num, VertexID_t n_nodes, EdgePos_t* ccg_deg, EdgePos_t* deg)
 {
   int thread_id = blockIdx.x * blockDim.x + threadIdx.x;
@@ -2496,6 +2543,9 @@ std::vector<dgl::aten::COOMatrix> CCGSampleFullLayers(uint64_t n_nodes, void *gp
 // } // namespace sampling
 } // namespace dgl
 
+////////////////////////////////
+// Labor sampling
+////////////////////////////////
 
 namespace dgl {
 // namespace aten{

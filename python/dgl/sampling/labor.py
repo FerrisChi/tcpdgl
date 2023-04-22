@@ -26,6 +26,8 @@ from ..heterograph import DGLGraph
 from ..random import choice
 from .utils import EidExcluder
 import time
+import torch.distributed as dist
+from ..utils import pflogger
 
 __all__ = ["sample_labors", "ccg_sample_labors"]
 
@@ -321,7 +323,8 @@ def _sample_labors(
             else:
                 excluded_edges_all_t.append(nd.array([], ctx=ctx))
 
-    print('[PF] bg sample.capi', time.time())
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        pflogger.info('bg sample.capi %f', time.time())
     ret_val = _CAPI_DGLSampleLabors(
         g._graph,
         nodes_all_types,
@@ -333,7 +336,8 @@ def _sample_labors(
         random_seed,
         nids_all_types,
     )
-    print('[PF] ed sample.capi', time.time())
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        pflogger.info('ed sample.capi %f', time.time())
 
     subgidx = ret_val[0]
     importances = [F.from_dgl_nd(importance) for importance in ret_val[1:]]
@@ -479,7 +483,8 @@ def _ccg_sample_labors(
             else:
                 excluded_edges_all_t.append(nd.array([], ctx=ctx))
 
-    print('[PF] bg sample.capi', time.time())
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        pflogger.info('bg sample.capi %f', time.time())
     ret_val = _CAPI_CCGSampleLabors(
         g.ccg.ccg_data,
         nodes_all_types,
@@ -491,7 +496,9 @@ def _ccg_sample_labors(
         random_seed,
         nids_all_types,
     )
-    print('[PF] ed sample.capi', time.time())
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        pflogger.info('ed sample.capi %f', time.time())
+
 
     subgidx = ret_val[0]
     importances = [F.from_dgl_nd(importance) for importance in ret_val[1:]]

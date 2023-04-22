@@ -15,6 +15,8 @@
 
 #include "../../../c_api_common.h"
 #include "randomwalks_impl.h"
+#include "../../serialize/graph_serialize.h"
+#include "../ccgsample/ccg_sample.h"
 
 using namespace dgl::runtime;
 using namespace dgl::aten;
@@ -229,5 +231,24 @@ DGL_REGISTER_GLOBAL("sampling.randomwalks._CAPI_DGLSamplingPackTraces")
       ret.push_back(Value(MakeValue(offsets)));
       *rv = ret;
     });
+
+////////////////////////////////
+// CCG Sample
+///////////////////////////////
+
+DGL_REGISTER_GLOBAL("sampling.randomwalks._CAPI_CCGSamplingRandomWalk")
+    .set_body([](DGLArgs args, DGLRetValue *rv) {
+      dgl::serialize::CCGData g = args[0];
+      IdArray seeds = args[1];
+      const int64_t length = args[2];
+      // void *nextDoorDataptr = args[3];
+
+      // dgl::NextDoorData *nextDoorData = static_cast<dgl::NextDoorData*>(nextDoorDataptr);
+      IdArray traces = CCGRandomWalk(g->n_nodes, g->gpu_ccg, g->nextDoorData, seeds, length);
+
+      // Value ret = Value(MakeValue(traces));
+      *rv = traces;
+    });
+
 
 };  // namespace dgl
