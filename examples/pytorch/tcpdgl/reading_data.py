@@ -5,7 +5,7 @@ import traceback
 
 import dgl
 from dgl.sampling import random_walk, ccg_random_walk
-
+from dgl.dataloading import DeepwalkSampler
 import numpy as np
 import scipy.sparse as sp
 import torch
@@ -126,7 +126,8 @@ def net2graph(net_sm):
 
 def find_connected_nodes(G):
     if hasattr(G, 'ccg'):
-        nodes = G.ccg.out_degree()
+        nodes = G.ccg.out_degrees()
+        print(nodes)
     else:
         nodes = G.out_degrees()
     nodes = nodes.nonzero().squeeze(-1)
@@ -147,7 +148,8 @@ class DeepwalkDataset:
         fast_neg=True,
         ogbl_name="",
         load_from_ogbl=False,
-        load_ccg=False
+        load_ccg=False,
+        device=None,
     ):
         """This class has the following functions:
         1. Transform the txt network file into DGL graph;
@@ -173,7 +175,8 @@ class DeepwalkDataset:
         self.num_procs = len(gpus)
         self.fast_neg = fast_neg
         self.load_ccg = load_ccg
-
+        self.device = device
+        
         if load_from_ogbl:
             assert (
                 len(gpus) == 1
@@ -231,7 +234,7 @@ class DeepwalkDataset:
 
     def create_sampler(self, i):
         """create random walk sampler"""
-        return DeepwalkSampler(self.G, self.seeds[i], self.batch_size, self.walk_length, self.load_ccg)
+        return DeepwalkSampler(self.G, self.seeds[i], self.batch_size, self.walk_length, self.load_ccg, self.device)
 
     def save_mapping(self, map_file):
         """save the mapping dict that maps node IDs to embedding indices"""
@@ -239,25 +242,25 @@ class DeepwalkDataset:
             pickle.dump(self.node2id, f)
 
 
-class DeepwalkSampler(object):
-    def __init__(self, G, seeds, batch_size, walk_length, ccg_sample):
-        """random walk sampler
+# class DeepwalkSampler(object):
+#     def __init__(self, G, seeds, batch_size, walk_length, ccg_sample):
+#         """random walk sampler
 
-        Parameter
-        ---------
-        G dgl.Graph : the input graph
-        seeds torch.LongTensor : starting nodes
-        walk_length int : walk length
-        """
-        self.G = G
-        self.seeds = seeds
-        self.batch_size = batch_size
-        self.walk_length = walk_length
-        self.ccg_sampe = ccg_sample
+#         Parameter
+#         ---------
+#         G dgl.Graph : the input graph
+#         seeds torch.LongTensor : starting nodes
+#         walk_length int : walk length
+#         """
+#         self.G = G
+#         self.seeds = seeds
+#         self.batch_size = batch_size
+#         self.walk_length = walk_length
+#         self.ccg_sampe = ccg_sample
 
-    def sample(self, seeds):
-        if self.ccg_sampe:
-            walks = ccg_random_walk(self.G.ccg, seeds, length=self.walk_length - 1)[0]
-        else:
-            walks = random_walk(self.G, seeds, length=self.walk_length - 1)[0]
-        return walks
+#     def sample(self, seeds):
+#         if self.ccg_sampe:
+#             walks = ccg_random_walk(self.G.ccg, seeds, length=self.walk_length - 1)[0]
+#         else:
+#             walks = random_walk(self.G, seeds, length=self.walk_length - 1)[0]
+#         return walks

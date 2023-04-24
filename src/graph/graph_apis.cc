@@ -339,8 +339,8 @@ DGL_REGISTER_GLOBAL("ccg._CAPI_TransferCCGTo_")
     DGLContext ctx;
     ctx.device_type = static_cast<DGLDeviceType>(device_type);
     ctx.device_id = device_id;
-    void *gpu_ccg = CCGCopyTo(hg->n_nodes, hg->ubl, hg->graph, hg->offset, ctx);
-    void *curand_states = InitCurand(ctx);
+    void *gpu_ccg = dgl::tcpdgl::CCGCopyTo(hg->n_nodes, hg->ubl, hg->graph, hg->offset, ctx);
+    void *curand_states = dgl::tcpdgl::InitCurand(ctx);
     hg->gpu_ccg = gpu_ccg;
     hg->curand_states = curand_states;
     hg->graph.clear();
@@ -351,14 +351,14 @@ DGL_REGISTER_GLOBAL("ccg._CAPI_TransferCCGTo_")
 DGL_REGISTER_GLOBAL("ccg._CAPI_CCGNumEdges")
 .set_body([](DGLArgs args, DGLRetValue* rv) {
   dgl::serialize::CCGData hg = args[0];
-  *rv = CCGNumEdges();
+  *rv = dgl::tcpdgl::CCGNumEdges();
 });
 
 DGL_REGISTER_GLOBAL("ccg._CAPI_CCGOutDegrees")
 .set_body([](DGLArgs args, DGLRetValue* rv) {
   dgl::serialize::CCGData hg = args[0];
   IdArray vids = args[1];
-  *rv = CCGOutGegrees(vids);
+  *rv = dgl::tcpdgl::CCGOutGegrees(vids);
 });
 
 DGL_REGISTER_GLOBAL("ccg._CAPI_CCGPinMemory_")

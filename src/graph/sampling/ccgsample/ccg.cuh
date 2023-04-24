@@ -4,10 +4,20 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 
+
+namespace dgl{
+
+namespace tcpdgl{
+
 typedef int64_t VertexID_t;
 typedef int64_t EdgePos_t;
 typedef uint32_t Graph_t;
 typedef uint64_t Offset_t;
+
+enum SamplingType {
+  NeighborSampling,
+  RandomWalkSampling
+};
 
 #define GRAPH_LEN 32
 
@@ -36,5 +46,9 @@ struct GPUBCGPartition {
     EdgePos_t* d_degoffset;
     EdgePos_t* d_deg;
 };
+
+} // tcpdgl
+
+} // dgl
 
 #endif

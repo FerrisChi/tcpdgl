@@ -576,7 +576,6 @@ DGL_REGISTER_GLOBAL("sampling.neighbor._CAPI_CCGSampleNeighbors")
 
     dgl::serialize::CCGData g = args[0];
     IdArray seed_nodes = args[1];
-    // const auto seed_nodes = seed_nodes_arr.ToVector<int64_t>();
     IdArray fanouts_array = args[2];
     const auto& fanouts = fanouts_array.ToVector<int64_t>();
     // const IdArray &fanouts = args[2];
@@ -584,10 +583,9 @@ DGL_REGISTER_GLOBAL("sampling.neighbor._CAPI_CCGSampleNeighbors")
 
     // auto _outt = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()); // nanoseconds
     // std::cout << "[PF] bg cpp_sample.ccgspl " << std::fixed << std::setprecision(7) << (double)(_outt.count() * 0.000001) << "\n";
-    std::vector<COOMatrix> sampled_coos = CCGSampleNeighbors(g->n_nodes, g->gpu_ccg, g->curand_states, g->nextDoorData, seed_nodes, fanouts);
+    std::vector<COOMatrix> sampled_coos = dgl::tcpdgl::CCGSampleNeighbors(g->n_nodes, g->gpu_ccg, g->curand_states, g->nextDoorData, seed_nodes, fanouts);
     // _outt = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch());
     // std::cout << "[PF] ed cpp_sample.ccgspl " << std::fixed << std::setprecision(7) << (double)(_outt.count() * 0.000001) << "\n";
-
     auto createmg = []{
       std::vector<int64_t> row_vec(1, 0);
       std::vector<int64_t> col_vec(1, 0);
@@ -627,7 +625,7 @@ DGL_REGISTER_GLOBAL("sampling.neighbor._CAPI_CCGFullLayerNeighbors")
     IdArray seed_nodes_arr = args[1];
     int64_t num_layers = args[2];
 
-    std::vector<COOMatrix> sampled_coos = CCGSampleFullLayers(g->n_nodes, g->gpu_ccg, seed_nodes_arr, num_layers);
+    std::vector<COOMatrix> sampled_coos = dgl::tcpdgl::CCGSampleFullLayers(g->n_nodes, g->gpu_ccg, seed_nodes_arr, num_layers);
 
     auto createmg = []{
       std::vector<int64_t> row_vec(1, 0);
@@ -686,7 +684,7 @@ DGL_REGISTER_GLOBAL("sampling.labor._CAPI_CCGSampleLabors")
       const auto dtype = IsNullArray(prob[0]) ? DGLDataTypeTraits<float>::dtype : prob[0]->dtype;
 
       ATEN_FLOAT_TYPE_SWITCH(dtype, FloatType, "probability", {
-        std::tie(sampled_coo, subimportances[0]) = CCGLaborSampling<kDGLCUDA, int64_t, FloatType>(
+        std::tie(sampled_coo, subimportances[0]) = dgl::tcpdgl::CCGLaborSampling<kDGLCUDA, int64_t, FloatType>(
           g->gpu_ccg, g->n_nodes, nodes[0], fanouts[0], prob[0], importance_sampling, random_seed, NIDs[0]);
       });
 

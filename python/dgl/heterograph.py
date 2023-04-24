@@ -5678,7 +5678,7 @@ class DGLGraph(object):
 
         # Copy ccg graph
         if hasattr(ret, 'ccg'):
-            ret.ccg = ret.ccg.to(utils.to_dgl_context(device))
+            ret.ccg = ret.ccg.to(device)
         return ret
 
     def cpu(self):

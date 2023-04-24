@@ -90,7 +90,7 @@ class CCGDataObject : public runtime::Object {
   std::vector<uint32_t> graph, offset;
   void* gpu_ccg;
   void* curand_states;
-  dgl::NextDoorData* nextDoorData;
+  dgl::tcpdgl::NextDoorData* nextDoorData;
 
   CCGDataObject() {
     this->n_nodes = 0;

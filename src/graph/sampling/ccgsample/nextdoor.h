@@ -8,6 +8,9 @@
 namespace dgl
 {
 
+namespace tcpdgl
+{
+
 class CCGSample {};
 
 class NextDoorData {
@@ -54,7 +57,10 @@ public:
     totalFinalSample = 1ll * sampleNum * finalSampleSize;
     return;
   }
+
+  NextDoorData() = default;
 };
 
+}
 }
 #endif

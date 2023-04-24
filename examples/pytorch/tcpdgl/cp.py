@@ -63,7 +63,7 @@ def main():
     model = SAGE(graph.ndata['feat'].shape[1], 256, dataset.num_classes).to(device)
     opt = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=5e-4)
 
-    fanout = [20, 5]
+    fanout = [5, 2]
     if args.sampler=='sage':
         sampler = dgl.dataloading.CCGNeighborSampler(
                 fanout, prefetch_node_feats=['feat'], prefetch_labels=['label'])
@@ -71,7 +71,7 @@ def main():
         sampler = dgl.dataloading.CCGLaborSampler(
             fanout, prefetch_node_feats=['feat'], prefetch_labels=['label'], importance_sampling=-2)
     train_dataloader = dgl.dataloading.CCGDataLoader(
-            graph, train_idx, sampler, device=device, batch_size=1024, shuffle=True, # 204800
+            graph, train_idx, sampler, device=device, batch_size=8, shuffle=True, # 204800
             drop_last=False, num_workers=0, pin_prefetcher=args.pin, use_uva=args.use_uva)
     # valid_dataloader = dgl.dataloading.CCGDataLoader(
     #         graph, valid_idx, sampler, device=device, batch_size = 204800, shuffle=True,

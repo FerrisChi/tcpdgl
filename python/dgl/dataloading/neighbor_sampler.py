@@ -222,13 +222,13 @@ class CCGNeighborSampler(BlockSampler):
     def init_nextdoor(self, ccg, batch_size, fanout, ctx):
         if isinstance(ctx, torch.device):
             ctx = utils.to_dgl_context(ctx)
-        self.nextdoorptr = _CAPI_AllocNextDoorData(ccg.ccg_data, batch_size, fanout, ctx.device_type, ctx.device_id)
+        _CAPI_AllocNextDoorData(ccg.ccg_data, batch_size, fanout, ctx.device_type, ctx.device_id)
 
     def sample_blocks(self, g, seed_nodes, exclude_eids=None):
         # g is ccg graph here
         if not dist.is_initialized() or dist.get_rank() == 0:
             pflogger.info('bg sampler.sample_blocks %f', time.time())
-        seed_nodes, output_nodes, sample_blocks = g.ccg_sample_neighbors(seed_nodes, self.fanouts, self.nextdoorptr, copy_ndata=False, copy_edata=True)
+        seed_nodes, output_nodes, sample_blocks = g.ccg_sample_neighbors(seed_nodes, self.fanouts, copy_ndata=False, copy_edata=True)
         if not dist.is_initialized() or dist.get_rank() == 0:
             pflogger.info('ed sampler.sample_blocks %f', time.time())
         return seed_nodes, output_nodes, sample_blocks
@@ -247,7 +247,7 @@ class CCGMultiLayerFullNeighborSampler(BlockSampler):
     def init_nextdoor(self, ccg, batch_size, fanout, ctx):
         if isinstance(ctx, torch.device):
             ctx = utils.to_dgl_context(ctx)
-        self.nextdoorptr = _CAPI_AllocNextDoorData(ccg.ccg_data, batch_size, fanout, ctx.device_type, ctx.device_id)
+        _CAPI_AllocNextDoorData(ccg.ccg_data, batch_size, fanout, ctx.device_type, ctx.device_id)
 
     def sample_blocks(self, g, seed_nodes, exclude_eids=None):
         # g is ccg graph here
@@ -259,7 +259,7 @@ class CCGMultiLayerFullNeighborSampler(BlockSampler):
         return seed_nodes, output_nodes, sample_blocks
     
 class DeepwalkSampler(object):
-    def __init__(self, G, seeds, batch_size, walk_length, ccg_sample):
+    def __init__(self, G, seeds, batch_size, walk_length, ccg_sample, device=None):
         """random walk sampler
 
         Parameter
@@ -272,19 +272,25 @@ class DeepwalkSampler(object):
         self.seeds = seeds
         self.batch_size = batch_size
         self.walk_length = walk_length
-        self.ccg_sampe = ccg_sample
-        if self.ccg_sampe:
-            import torch
+        self.ccg_sample = ccg_sample
+        if self.ccg_sample:
+            self.seeds = self.seeds.to('cuda:0')
             self.init_nextdoor(batch_size, F.to_dgl_nd(torch.tensor([walk_length])), F.context(self.seeds))
+        elif device:
+            self.seeds = self.seeds.to(device)
     
     def init_nextdoor(self, batch_size, fanout, ctx):
         if isinstance(ctx, torch.device):
             ctx = utils.to_dgl_context(ctx)
-        self.nextdoorptr = _CAPI_AllocNextDoorData(self.G.ccg.ccg_data, batch_size, fanout, ctx.device_type, ctx.device_id)
+        _CAPI_AllocNextDoorData(self.G.ccg.ccg_data, batch_size, fanout, ctx.device_type, ctx.device_id)
 
     def sample(self, seeds):
-        if self.ccg_sampe:
-            walks = ccg_random_walk(self.G.ccg, seeds, self.nextdoorptr, length=self.walk_length - 1)[0]
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            pflogger.info('bg sampler.sample_blocks %f', time.time())
+        if self.ccg_sample:
+            walks = ccg_random_walk(self.G, seeds, length=self.walk_length)[0]
         else:
             walks = random_walk(self.G, seeds, length=self.walk_length - 1)[0]
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            pflogger.info('ed sampler.sample_blocks %f', time.time())
         return walks

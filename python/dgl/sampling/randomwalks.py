@@ -4,6 +4,10 @@
 from .. import backend as F, ndarray as nd, utils
 from .._ffi.function import _init_api
 from ..base import DGLError
+from ..utils import pflogger
+
+import time
+import torch.distributed as dist
 
 __all__ = ["random_walk", "pack_traces", "ccg_random_walk"]
 
@@ -228,7 +232,6 @@ def random_walk(
 def ccg_random_walk(
     g,
     nodes,
-    nextdoorptr,
     *,
     metapath=None,
     length=None,
@@ -236,14 +239,14 @@ def ccg_random_walk(
     restart_prob=None,
     return_eids=False
 ):
-    n_etypes = len(g.canonical_etypes)
-    n_ntypes = len(g.ntypes)
+    # n_etypes = len(g.canonical_etypes)
+    # n_ntypes = len(g.ntypes)
 
     if metapath is None:
-        if n_etypes > 1 or n_ntypes > 1:
-            raise DGLError(
-                "metapath not specified and the graph is not homogeneous."
-            )
+        # if n_etypes > 1 or n_ntypes > 1:
+        #     raise DGLError(
+        #         "metapath not specified and the graph is not homogeneous."
+        #     )
         if length is None:
             raise ValueError(
                 "Please specify either the metapath or the random walk length."
@@ -262,7 +265,6 @@ def ccg_random_walk(
 
     # Load the probability tensor from the edge frames
     ctx = utils.to_dgl_context(g.device)
-    print(f'ctx: {ctx}')
     if prob is None:
         p_nd = [nd.array([], ctx=ctx) for _ in g.canonical_etypes]
     else:
@@ -278,9 +280,11 @@ def ccg_random_walk(
     if return_eids:
         raise ValueError('Do not support argc: return_eids.')
 
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        pflogger.info('bg sample.capi %f', time.time())
     # Actual random walk
     if restart_prob is None:
-        traces = _CAPI_CCGSamplingRandomWalk(gdata, nodes, length, nextdoorptr)
+        traces = _CAPI_CCGSamplingRandomWalk(gdata, nodes, length)
     elif F.is_tensor(restart_prob):
         raise ValueError('Do not support random walk with stepwise restart.')
         restart_prob = F.to_dgl_nd(restart_prob)
@@ -294,9 +298,11 @@ def ccg_random_walk(
         )
     else:
         raise TypeError("restart_prob should be float or Tensor.")
-
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        pflogger.info('ed sample.capi %f', time.time())
     traces = F.from_dgl_nd(traces)
-    return traces
+    types = []
+    return (traces, types)
 
 
 def pack_traces(traces, types):

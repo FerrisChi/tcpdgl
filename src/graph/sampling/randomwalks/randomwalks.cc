@@ -241,12 +241,8 @@ DGL_REGISTER_GLOBAL("sampling.randomwalks._CAPI_CCGSamplingRandomWalk")
       dgl::serialize::CCGData g = args[0];
       IdArray seeds = args[1];
       const int64_t length = args[2];
-      // void *nextDoorDataptr = args[3];
 
-      // dgl::NextDoorData *nextDoorData = static_cast<dgl::NextDoorData*>(nextDoorDataptr);
-      IdArray traces = CCGRandomWalk(g->n_nodes, g->gpu_ccg, g->nextDoorData, seeds, length);
-
-      // Value ret = Value(MakeValue(traces));
+      IdArray traces = dgl::tcpdgl::CCGRandomWalk(g->n_nodes, g->gpu_ccg, g->nextDoorData, seeds, length);
       *rv = traces;
     });
 

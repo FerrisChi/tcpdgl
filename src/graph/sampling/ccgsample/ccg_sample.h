@@ -22,12 +22,37 @@
 
 namespace dgl {
 
+namespace tcpdgl
+{
+
 const size_t N_THREADS = 256;
 const bool useGridKernel = true;
 const bool useSubWarpKernel = false;
 const bool useThreadBlockKernel = true;
 const bool combineTwoSampleStores = false;
 const bool enableLoadBalancing = false;
+
+// extern variables for sampling
+// graph info
+extern VertexID_t n_nodes;
+extern std::vector<int64_t> fanouts;
+extern int64_t *d_fanouts;
+extern int64_t trace_length;
+
+// sample result
+extern std::vector<dgl::aten::COOMatrix> vecCOO;
+extern IdArray traces;
+extern VertexID_t *out_trace;
+
+// step result
+extern dgl::NDArray picked_row;
+extern dgl::NDArray picked_col;
+extern dgl::NDArray picked_idx;
+extern VertexID_t *out_rows;
+extern VertexID_t *out_cols;
+extern EdgePos_t *out_idxs;
+extern int64_t spl_len;
+
 
 struct FullLayersData {
   dgl::NDArray d_picked_row, d_picked_col, d_picked_idx;
@@ -261,7 +286,65 @@ struct BCGVertex {
   }
 };
 
-struct CCGApp {
+class CCGNeighborApp {
+public:
+  
+  __host__
+  void init(const std::vector<int64_t> &_fanouts, const DGLContext &ctx)
+  {
+    std::vector<int64_t> f_copy(_fanouts.begin(), _fanouts.end());
+    fanouts = std::move(f_copy);
+    vecCOO.clear();
+  }
+
+  __host__ __device__ int samplingType()
+  {
+    return SamplingType::NeighborSampling;
+  }
+
+  __host__ 
+  void initStepSample(const int64_t &_spl_len, const DGLContext &ctx)
+  {
+    spl_len = _spl_len;
+    picked_row = dgl::aten::NewIdArray(spl_len, ctx, sizeof(VertexID_t) * 8); // DGL_ARRAY
+    picked_col = dgl::aten::NewIdArray(spl_len, ctx, sizeof(VertexID_t) * 8);
+    picked_idx = dgl::aten::NewIdArray(spl_len, ctx, sizeof(EdgePos_t) * 8);
+    out_rows = static_cast<VertexID_t *>(picked_row->data);
+    out_cols = static_cast<VertexID_t *>(picked_col->data);
+    out_idxs = static_cast<EdgePos_t *>(picked_idx->data);
+  }
+
+  __host__
+  void procStepSample()
+  {
+    auto _picked_row = picked_row.CreateView({spl_len}, picked_row->dtype);
+    auto _picked_col = picked_col.CreateView({spl_len}, picked_col->dtype);
+    auto _picked_idx = picked_idx.CreateView({spl_len}, picked_idx->dtype);
+    // std::cout << "CCGSample COO Matrix: length: " << spl_len << std::endl;
+    // gpuprint<<<1,1>>>(out_rows, spl_len);
+    // cudaDeviceSynchronize();
+    // gpuprint<<<1,1>>>(out_cols, spl_len);
+    // cudaDeviceSynchronize();
+    // gpuprint<<<1,1>>>(out_idxs, spl_len);
+    // cudaDeviceSynchronize();
+    vecCOO.emplace_back(n_nodes, n_nodes, _picked_col, _picked_row, _picked_idx);
+  }
+
+  __host__ int steps() {return fanouts.size();}
+  
+  __host__
+  int getFinalSampleSize()
+  {
+    size_t finalSampleSize = 0;
+    size_t neighborsToSampleAtStep = 1;
+    for (auto step : fanouts)
+    {
+      neighborsToSampleAtStep *= step;
+      finalSampleSize += neighborsToSampleAtStep;
+    }
+    return finalSampleSize;
+  }
+
   __device__ inline
   VertexID_t next(const int step, const VertexID_t* transit, const VertexID_t sampleIdx, const VertexID_t numEdges, const EdgePos_t neighbrID, curandState* state, BCGVertex * bcgv) {
     if (numEdges == 0)
@@ -285,8 +368,6 @@ struct CCGApp {
     return bcgv->get_vertex(neighbor_pos);
     // VertexID_t ret = bcgv->get_vertex(neighbor_pos);
     // // printf("%ld -> %ld\n", *transit, ret);
-    // assert(ret >= 0);
-    // assert(ret <= 3774768);
     // return ret;
   }
 
@@ -322,13 +403,128 @@ struct CCGApp {
   }
 };
 
+class CCGRandomWalkApp {
+public:
+
+  __host__ int steps() {return trace_length - 1;}
+
+  __host__ __device__ int samplingType()
+  {
+    return SamplingType::RandomWalkSampling;
+  }
+
+  __host__
+  void init(const IdArray &seeds, int length, const DGLContext &ctx)
+  {
+    int64_t num_seeds = seeds.NumElements();
+    trace_length = length;
+    traces = IdArray::Empty({num_seeds, trace_length}, seeds->dtype, ctx);
+    out_trace = traces.Ptr<VertexID_t>();
+    fanouts = std::vector<VertexID_t>(trace_length - 1, 1);
+  }
+
+  __host__
+  int getFinalSampleSize() {
+    return trace_length;
+  }
+
+  __host__ __device__ 
+  int stepSize(int k) {
+    return 1;
+  }
+
+  const int VERTICES_PER_SAMPLE = 1;
+
+  __host__ __device__ EdgePos_t numSamples(VertexID_t n_nodes)
+  {
+    return n_nodes / VERTICES_PER_SAMPLE;
+  }
+
+  __host__
+  void initStepSample(const int64_t &_spl_len, const DGLContext &ctx)
+  {
+    spl_len = _spl_len;
+  }
+
+  __host__
+  void procStepSample()
+  {
+
+  }
+
+  __host__ std::vector<VertexID_t> initialSample(int sampleIdx, VertexID_t n_nodes, CCGSample& sample) {
+    std::vector<VertexID_t> initialValue;
+    for (int i = 0; i < VERTICES_PER_SAMPLE; i++)
+      initialValue.push_back(sampleIdx);
+    return initialValue;
+  }
+
+  __host__ __device__ EdgePos_t initialSampleSize(void)
+  {
+    return VERTICES_PER_SAMPLE;
+  }
+
+  __host__ __device__ bool hasExplicitTransits()
+  {
+    return false;
+  }
+
+  template<class SampleType>
+  __host__ __device__ VertexID_t stepTransits(int step, const VertexID_t sampleID, SampleType& sample, int transitIdx, curandState* randState)
+  {
+    return -1;
+  }
+
+  template<class SampleType>
+  __host__ SampleType initializeSample(const VertexID_t sampleID)
+  {
+    CCGSample sample;
+    return sample;
+  }
+
+  __device__ inline
+  VertexID_t next(const int step, const VertexID_t* transit, const VertexID_t sampleIdx, const VertexID_t numEdges, const EdgePos_t neighbrID, curandState* state, BCGVertex * bcgv, EdgePos_t& neighbor_pos) {
+    if (numEdges == 0)
+      return -1;
+    neighbor_pos = RandNumGen::rand_int(state, numEdges);
+    return bcgv->get_vertex(neighbor_pos);
+    // VertexID_t ret = bcgv->get_vertex(neighbor_pos);
+    // // printf("%ld -> %ld\n", *transit, ret);
+    // return ret;
+  }
+
+  // template<typename SampleType, typename EdgeArray, typename WeightArray>
+  // __device__ inline
+  // VertexID_t next(int step, const VertexID_t* transit, const VertexID_t sampleIdx,
+  //               SampleType* sample, 
+  //               const float max_weight,
+  //               EdgeArray& transitEdges, WeightArray& transitEdgeWeights,
+  //               const EdgePos_t numEdges, const VertexID_t neighbrID, curandState* state)
+  // {
+  //   if (numEdges == 0) {
+  //     return -1;
+  //   }
+  //   if (numEdges == 1) {
+  //     return transitEdges[0];
+  //   }
+    
+  //   EdgePos_t x = RandNumGen::rand_int(state, numEdges);
+  //   float y = curand_uniform(state)*max_weight;
+
+  //   while (y > transitEdgeWeights[x]) {
+  //     x = RandNumGen::rand_int(state, numEdges);
+  //     y = curand_uniform(state)*max_weight;
+  //   }
+
+  //   return transitEdges[x];
+  // }
+};
 
 std::vector<dgl::aten::COOMatrix> CCGSampleNeighbors(uint64_t n_nodes, void *gpu_ccg, void *crs, NextDoorData *nextDoorData, IdArray &seed_nodes, const std::vector<int64_t> &fanouts);
 void *CCGCopyTo(uint64_t n_nodes, int ubl, const std::vector<uint32_t> &g_data, const std::vector<uint32_t> &g_offset, const DGLContext &ctx);
 void *InitCurand(const DGLContext &ctx);
 
-template<int initialVertexSize> __global__
-void setGPUSeeds(VertexID_t *seed_nodes, VertexID_t seed_num, VertexID_t n_nodes, CCGSample *samples, VertexID_t *initialContents, VertexID_t *initialTransitToSampleValues);
+__global__ void setGPUSeeds(int initialVertexSize, VertexID_t *seed_nodes, VertexID_t seed_num, VertexID_t n_nodes, CCGSample *samples, VertexID_t *initialContents, VertexID_t *initialTransitToSampleValues);
 
 void allocNextDoorDataOnDevice(NextDoorData& data, const DGLContext &ctx);
 void setNextDoorData(NextDoorData* data, void* gpu_ccg, void *crs);
@@ -353,6 +549,7 @@ DegreeArray CCGOutGegrees(IdArray vids);
 
 IdArray CCGRandomWalk(uint64_t n_nodes, void *gpu_ccg, NextDoorData *nextDoorData, IdArray seeds, int64_t length);
 
+}
 // }  // namespace sampling
 }  // namespace dgl
 

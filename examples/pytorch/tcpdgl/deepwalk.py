@@ -31,6 +31,7 @@ class DeepwalkTrainer:
             fast_neg=args.fast_neg,
             ogbl_name=args.ogbl_name,
             load_from_ogbl=args.load_from_ogbl,
+            load_ccg=args.load_ccg
         )
         self.emb_size = self.dataset.G.num_nodes()
         self.emb_model = None
@@ -286,20 +287,28 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="DeepWalk")
     # input files
     ## personal datasets
+    data_path = '/mnt/data2/chijj/data/'
     parser.add_argument(
         "--data_file",
         type=str,
+        default='/mnt/data2/chijj/data/ogbl_ddi',
         help="path of the txt network file, builtin dataset include youtube-net and blog-net",
     )
     ## ogbl datasets
     parser.add_argument(
-        "--ogbl_name", type=str, help="name of ogbl dataset, e.g. ogbl-ddi"
+        "--ogbl_name", type=str,default='ogbl-ddi', help="name of ogbl dataset, e.g. ogbl-ddi"
     )
     parser.add_argument(
         "--load_from_ogbl",
-        default=False,
+        default=True,
         action="store_true",
         help="whether load dataset from ogbl",
+    )
+    parser.add_argument(
+        "--load_ccg",
+        default=True,
+        action="store_true",
+        help="whether load ccg graph"
     )
 
     # output files
@@ -406,7 +415,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--gpus",
         type=int,
-        default=[-1],
+        default=[0],
         nargs="+",
         help="a list of active gpu ids, e.g. 0, used with --mix",
     )
@@ -418,7 +427,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--only_gpu",
-        default=False,
+        default=True,
         action="store_true",
         help="training with GPU",
     )
@@ -448,7 +457,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--num_sampler_threads",
-        default=2,
+        default=0,
         type=int,
         help="number of threads used for sampling",
     )

@@ -210,6 +210,7 @@ DGL_REGISTER_GLOBAL("dataloading.neighbor_sampler._CAPI_AllocNextDoorData")
   IdArray fanouts_arr = args[2];
   const int device_type = args[3];
   const int device_id = args[4];
+  
   DGLContext ctx;
   ctx.device_type = static_cast<DGLDeviceType>(device_type);
   ctx.device_id = device_id;
@@ -224,10 +225,10 @@ DGL_REGISTER_GLOBAL("dataloading.neighbor_sampler._CAPI_AllocNextDoorData")
     return;
   }
 
-  ccg_data->nextDoorData = new NextDoorData;
+  ccg_data->nextDoorData = new tcpdgl::NextDoorData;
   ccg_data->nextDoorData->setNumber(ccg_data->n_nodes, seed_nodes_size, fanouts);  
-  allocNextDoorDataOnDevice(*(ccg_data->nextDoorData), ctx);
-  setNextDoorData(ccg_data->nextDoorData, ccg_data->gpu_ccg, ccg_data->curand_states);
+  tcpdgl::allocNextDoorDataOnDevice(*(ccg_data->nextDoorData), ctx);
+  tcpdgl::setNextDoorData(ccg_data->nextDoorData, ccg_data->gpu_ccg, ccg_data->curand_states);
 
   // std::cout<<"Alloc NextDoorData done."<<std::endl;
 

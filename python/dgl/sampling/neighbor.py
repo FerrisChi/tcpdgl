@@ -842,12 +842,12 @@ def select_topk(
 
 DGLGraph.select_topk = utils.alias_func(select_topk)
 
-def ccg_sample_neighbors(g, seed_nodes, fanouts, nextdoorptr,
+def ccg_sample_neighbors(g, seed_nodes, fanouts,
                          copy_ndata=True, copy_edata=True, output_device=None):
     if not dist.is_initialized() or dist.get_rank() == 0:
         pflogger.info('bg sample.capi %f', time.time())
     fanouts_array = F.tensor(fanouts, dtype=F.int64).flip(0)
-    subgidices = _CAPI_CCGSampleNeighbors(g.ccg.ccg_data, F.to_dgl_nd(seed_nodes), F.to_dgl_nd(fanouts_array), nextdoorptr)
+    subgidices = _CAPI_CCGSampleNeighbors(g.ccg.ccg_data, F.to_dgl_nd(seed_nodes), F.to_dgl_nd(fanouts_array))
     if not dist.is_initialized() or dist.get_rank() == 0:
         pflogger.info('ed sample.capi %f', time.time())
         

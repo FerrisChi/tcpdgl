@@ -18,8 +18,13 @@ class CCG(object):
         self.v_num = _v_num
         self.ccg_data = _ccg_data
         self.ctx = None
+        self.idtype = torch.int64
+        self.pinned = False
         return
 
+    def is_pinned(self):
+        return self.pinned
+    
     def __getstate__(self):
         # BUG
         input("__getstate__ CCG")
@@ -31,10 +36,13 @@ class CCG(object):
         self.v_num, self.ccg_data = state
         self.ctx = None
 
-    def to(self, ctx, **kwargs):  # pylint: disable=invalid-name
-        # thisctx = utils.to_dgl_context(device)
-        self.ccg_data = _CAPI_TransferCCGTo_(self.ccg_data, ctx.device_type, ctx.device_id)
-        self.ctx = ctx
+    @property
+    def device(self):
+        return F.to_backend_ctx(self.ctx)
+
+    def to(self, device, **kwargs):  # pylint: disable=invalid-name
+        self.ctx = utils.to_dgl_context(device)
+        self.ccg_data = _CAPI_TransferCCGTo_(self.ccg_data, self.ctx.device_type, self.ctx.device_id)
         return self
         # TODO(chijj): whether to copy ccg_data?
         ret = copy.copy(self)
@@ -59,7 +67,7 @@ class CCG(object):
         ret._batch_num_edges = None
 
         return ret
-    
+
     def num_nodes(self):
         return self.v_num
 
@@ -77,8 +85,8 @@ class CCG(object):
         # ) != len(u_tensor):
         #     raise DGLError("u contains invalid node IDs")
         # deg = self._graph.out_degrees(etid, utils.prepare_tensor(self, u, "u"))
-        v_array = u_tensor.todgltensor()
-        deg = utils.toindex(_CAPI_CCGOutDegrees(self.ccg_data, v_array))
+        deg = _CAPI_CCGOutDegrees(self.ccg_data, F.to_dgl_nd(u_tensor))
+        deg = F.from_dgl_nd(deg)
         if isinstance(u, numbers.Integral):
             return F.as_scalar(deg)
         else:

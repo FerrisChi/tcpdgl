@@ -45,10 +45,32 @@ using namespace dgl::runtime;
 
 namespace dgl {
 
-// namespace sampling {
+namespace tcpdgl {
+
 const size_t CCGCurandNum = 5L * 1024L * 1024L;
 
 __constant__ char bcgPartitionBuff[sizeof(BCGPartition)];
+
+// graph info
+VertexID_t n_nodes;
+std::vector<int64_t> fanouts;
+int64_t *d_fanouts;
+int64_t trace_length;
+
+// sample result
+std::vector<dgl::aten::COOMatrix> vecCOO;
+IdArray traces;
+VertexID_t *out_trace;
+
+// step result
+dgl::NDArray picked_row;
+dgl::NDArray picked_col;
+dgl::NDArray picked_idx;
+VertexID_t *out_rows;
+VertexID_t *out_cols;
+EdgePos_t *out_idxs;
+int64_t spl_len;
+
 
 __global__ void gpuprint(int *arr, int len = 10)
 {
@@ -87,18 +109,6 @@ enum TransitParallelMode
   CollectiveNeighborhoodComputation, // Compute the collective neighborhood
 };
 
-int getFinalSampleSize(const std::vector<int64_t> &fanouts)
-{
-  size_t finalSampleSize = 0;
-  size_t neighborsToSampleAtStep = 1;
-  for (auto step : fanouts)
-  {
-    neighborsToSampleAtStep *= step;
-    finalSampleSize += neighborsToSampleAtStep;
-  }
-  return finalSampleSize;
-}
-
 __host__ __device__
     EdgePos_t
     subWarpSizeAtStep(EdgePos_t x)
@@ -127,7 +137,6 @@ __host__ __device__ bool isValidSampledVertex(VertexID_t neighbor, VertexID_t In
 {
   return neighbor != InvalidVertex && neighbor != -1;
 }
-
 
 void allocNextDoorDataOnDevice(NextDoorData &data, const DGLContext &ctx)
 {
@@ -173,8 +182,8 @@ void allocNextDoorDataOnDevice(NextDoorData &data, const DGLContext &ctx)
     const size_t deviceSampleStartPtr = PartStartPointer(samples_num, deviceIdx, numDevices);
 
     // Allocate storage and copy initial samples on GPU
-    size_t partDivisionSize = CCGApp().initialSampleSize() * perDeviceNumSamples;
-    size_t partStartPtr = CCGApp().initialSampleSize() * deviceSampleStartPtr;
+    // size_t partDivisionSize = CCGApp().initialSampleSize() * perDeviceNumSamples;
+    // size_t partStartPtr = CCGApp().initialSampleSize() * deviceSampleStartPtr;
     // CHK_CU(cudaMalloc(&data.dInitialSamples[deviceIdx], sizeof(VertexID_t)*partDivisionSize));
     // CHK_CU(cudaMemcpy(data.dInitialSamples[deviceIdx], &data.initialContents[0] + partStartPtr,
     //                   sizeof(VertexID_t)*partDivisionSize, cudaMemcpyHostToDevice));
@@ -222,8 +231,7 @@ void allocNextDoorDataOnDevice(NextDoorData &data, const DGLContext &ctx)
   return;
 }
 
-template <int initialVertexSize>
-__global__ void setGPUSeeds(VertexID_t *seed_nodes, VertexID_t seed_num, VertexID_t n_nodes, CCGSample *samples, VertexID_t *initialContents, VertexID_t *initialTransitToSampleValues)
+__global__ void setGPUSeeds(int initialVertexSize, VertexID_t *seed_nodes, VertexID_t seed_num, VertexID_t n_nodes, CCGSample *samples, VertexID_t *initialContents, VertexID_t *initialTransitToSampleValues)
 {
   VertexID_t sampleIdx = threadIdx.x + blockIdx.x * blockDim.x;
   if (sampleIdx < seed_num)
@@ -243,37 +251,26 @@ __global__ void setGPUSeeds(VertexID_t *seed_nodes, VertexID_t seed_num, VertexI
   return;
 }
 
+template<typename CCGApp>
 void initializeNextDoorSample(NextDoorData &data, const IdArray &seed_nodes_arr, const int tot_step)
 {
-
-  // auto _outt = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch());
-  // std::cout << "[PF] bg cpseeds " << std::fixed << std::setprecision(7) << (double)(_outt.count() * 0.000001) << std::endl;
-
-  // std::vector<int64_t> seed_nodes = seed_nodes_arr.ToVector<int64_t>();
   unsigned long seed_node_size = seed_nodes_arr.NumElements();
-  
-  // std::cout<<"seed_nodes_arr device: "<<dgl::runtime::DeviceTypeCode2Str(seed_nodes_arr->ctx.device_type)<<std::endl;
-
   VertexID_t *d_seed_nodes = static_cast<VertexID_t *>(seed_nodes_arr->data);
 
   data.sampleNum = seed_node_size;
 
-  // VertexID_t *d_seed_nodes;
-  // CHK_CU(cudaMalloc((void**)&d_seed_nodes, sizeof(VertexID_t) * data.sampleNum));
-
-  // CHK_CU(cudaMemcpy(d_seed_nodes, seed_nodes.data(), sizeof(VertexID_t) * data.sampleNum, cudaMemcpyHostToDevice));
-  // _outt = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch());
-  // std::cout << "[PF] ed cpseeds " << std::fixed << std::setprecision(7) << (double)(_outt.count() * 0.000001) << std::endl;
-  // std::cout << "seed_node_size " << seed_node_size << " data.sampleNum " << data.sampleNum << " data.n_nodes " << data.n_nodes << " tot_step " << tot_step << std::endl;
+  // std::cout << "initialVertexSize " << CCGApp().VERTICES_PER_SAMPLE << " seed_node_size " << seed_node_size << " data.sampleNum " << data.sampleNum << " data.n_nodes " << data.n_nodes << " tot_step " << tot_step << std::endl;
   // _outt = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch());
   // std::cout << "[PF] bg setGPUSeeds " << std::fixed << std::setprecision(7) << (double)(_outt.count() * 0.000001) << std::endl;
   for (size_t deviceIdx = 0; deviceIdx < data.devices.size(); ++deviceIdx)
   {
     // CHK_CU(cudaSetDevice(deviceIdx));
-    if (tot_step == 1)
-      setGPUSeeds<CCGApp().VERTICES_PER_SAMPLE><<<utils::thread_block_size(seed_node_size, 256UL), 256UL>>>(d_seed_nodes, data.sampleNum, data.n_nodes, data.dOutputSamples[deviceIdx], data.dSamplesToTransitMapValues[deviceIdx], data.dSamplesToTransitMapKeys[deviceIdx]);
+    if (tot_step == 1) 
+      setGPUSeeds<<<utils::thread_block_size(seed_node_size, 256UL), 256UL>>>
+        (CCGApp().VERTICES_PER_SAMPLE, d_seed_nodes, data.sampleNum, data.n_nodes, data.dOutputSamples[deviceIdx], data.dSamplesToTransitMapValues[deviceIdx], data.dSamplesToTransitMapKeys[deviceIdx]);
     else
-      setGPUSeeds<CCGApp().VERTICES_PER_SAMPLE><<<utils::thread_block_size(seed_node_size, 256UL), 256UL>>>(d_seed_nodes, data.sampleNum, data.n_nodes, data.dOutputSamples[deviceIdx], data.dTransitToSampleMapKeys[deviceIdx], data.dTransitToSampleMapValues[deviceIdx]);
+      setGPUSeeds<<<utils::thread_block_size(seed_node_size, 256UL), 256UL>>>
+        (CCGApp().VERTICES_PER_SAMPLE, d_seed_nodes, data.sampleNum, data.n_nodes, data.dOutputSamples[deviceIdx], data.dTransitToSampleMapKeys[deviceIdx], data.dTransitToSampleMapValues[deviceIdx]);
   }
   // CUDA_SYNC_DEVICE_ALL(data);
   // _outt = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch());
@@ -300,9 +297,6 @@ void initializeNextDoorSample(NextDoorData &data, const IdArray &seed_nodes_arr,
   //     data.initialTransitToSampleValues.push_back(sampleIdx);
   //   }
   // }
-
-  // for (int i = 0; i < 10; ++i) std::cout << data.initialContents[i] << ' '; std::cout << std::endl;
-  // for (int i = 0; i < 10; ++i) std::cout << data.initialTransitToSampleValues[i] << ' '; std::cout << std::endl;
 
   // _outt = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch());
   // std::cout << "[PF] ed initspl_for " << std::fixed << std::setprecision(7) << (double)(_outt.count() * 0.000001) << std::endl;
@@ -595,7 +589,7 @@ __global__ void invalidVertexStartPos(int step, VertexID_t *transitToSamplesKeys
   }
 }
 
-template <int TB_THREADS, TransitKernelTypes kTy, bool WRITE_KERNELTYPES>
+template <typename CCGApp, int TB_THREADS, TransitKernelTypes kTy, bool WRITE_KERNELTYPES>
 __global__ void partitionTransitsInKernels(int step, EdgePos_t *uniqueTransits, EdgePos_t *uniqueTransitCounts,
                                             EdgePos_t *transitPositions,
                                             EdgePos_t uniqueTransitCountsNum, VertexID_t invalidVertex,
@@ -826,7 +820,7 @@ __global__ void partitionTransitsInKernels(int step, EdgePos_t *uniqueTransits, 
 
 #define STORE_TRANSIT_INDEX false
 
-template <TransitParallelMode tpMode, int CollNeighStepSize>
+template <typename CCGApp, TransitParallelMode tpMode, int CollNeighStepSize>
 __global__ void samplingKernel(const int step, const size_t threadsExecuted, const size_t currExecutionThreads,
                                 const VertexID_t deviceFirstSample, const VertexID_t invalidVertex,
                                 const VertexID_t *transitToSamplesKeys, const VertexID_t *transitToSamplesValues,
@@ -835,7 +829,10 @@ __global__ void samplingKernel(const int step, const size_t threadsExecuted, con
                                 const size_t finalSampleSize,
                                 EdgePos_t *sampleNeighborhoodSizes, EdgePos_t *sampleNeighborhoodPos,
                                 VertexID_t *collectiveNeighborhoodCSRRows,
-                                EdgePos_t *collectiveNeighborhoodCSRCols, curandState *randStates, int tot_step, int64_t* fanouts, VertexID_t *out_rows, VertexID_t *out_cols, EdgePos_t *out_idxs)
+                                EdgePos_t *collectiveNeighborhoodCSRCols,
+                                curandState *randStates, int tot_step, int64_t* fanouts,
+                                VertexID_t *out_rows, VertexID_t *out_cols, EdgePos_t *out_idxs,
+                                VertexID_t *out_trace, int64_t trace_length)
 {
   // if (threadIdx.x == 0 && blockIdx.x == 0) printf("SK %d\n", step);
   EdgePos_t threadId = threadIdx.x + blockDim.x * blockIdx.x;
@@ -890,17 +887,6 @@ __global__ void samplingKernel(const int step, const size_t threadsExecuted, con
                                   numTransitEdges, transitNeighborIdx, randState, &bcgv, neighbor_pos);
         neighbor_pos += bcg->degoffset[transit];
       }
-      // else
-      // {
-      //   int insertionPos = utils::atomicAdd(&sampleInsertionPositions[sampleIdx - deviceFirstSample], numTransitEdges);
-      //   collectiveNeighborhoodCSRRows[(sampleIdx - deviceFirstSample) * CCGApp().initialSampleSize() + 0] = insertionPos;
-
-      //   for (int e = transitNeighborIdx; e < numTransitEdges; e += stepSize)
-      //   {
-      //     //   EdgePos_t pos = sampleNeighborhoodPos[(sampleIdx - deviceFirstSample)] + e + insertionPos%2;
-      //     //   collectiveNeighborhoodCSRCols[pos] = transitEdges[e];
-      //   }
-      // }
     }
     else if (tpMode == CollectiveNeighborhoodSize)
     {
@@ -929,36 +915,25 @@ __global__ void samplingKernel(const int step, const size_t threadsExecuted, con
       samplesToTransitKeys[threadId] = sampleIdx;
     }
 
-    // size_t finalSampleSizeTillPreviousStep = 0;
-    // size_t neighborsToSampleAtStep = 1;
-    // if (isValidSampledVertex(neighbor, invalidVertex))
-    // {
-    //   // insertionPos = finalSampleSizeTillPreviousStep + transitNeighborIdx; //
-    //   if (step == 0)
-    //   {
-    //     insertionPos = transitNeighborIdx;
-    //   }
-    //   else
-    //   {
-    //     for (int _s = 0; _s < step; _s++)
-    //     {
-    //       neighborsToSampleAtStep *= fanouts[_s];
-    //       finalSampleSizeTillPreviousStep += neighborsToSampleAtStep;
-    //     }
-    //     // insertionPos = finalSampleSizeTillPreviousStep + utils::atomicAdd(&sampleInsertionPositions[(sampleIdx - deviceFirstSample)], 1);
-    //     insertionPos = utils::atomicAdd(&sampleInsertionPositions[(sampleIdx - deviceFirstSample)], 1);
-    //   }
-    // }
-    insertionPos = threadId;
-    assert(insertionPos < transitToSamplesSize);
-
-    out_rows[insertionPos] = neighbor != -1 ? transit : invalidVertex;
-    out_cols[insertionPos] = neighbor != -1 ? neighbor : invalidVertex;
-    out_idxs[insertionPos] = neighbor != -1 ? neighbor_pos : -1;
+    if (CCGApp().samplingType() == SamplingType::NeighborSampling)
+    {
+      insertionPos = threadId;
+      // insertionPos = (sampleIdx - deviceFirstSample) * CCGApp().initialSampleSize() * CCGApp().stepSize(step - 1) + 
+      assert(insertionPos < transitToSamplesSize);
+      out_rows[insertionPos] = neighbor != -1 ? transit : invalidVertex;
+      out_cols[insertionPos] = neighbor != -1 ? neighbor : invalidVertex;
+      out_idxs[insertionPos] = neighbor != -1 ? neighbor_pos : -1;
+    }
+    else if (CCGApp().samplingType() == SamplingType::RandomWalkSampling)
+    {
+      insertionPos = trace_length * (sampleIdx - deviceFirstSample) + step + 1; // seed takes up a pos
+      // if(!threadId) printf("[sampling kernel]: %d %ld %ld %ld %ld %ld %ld\n", step, threadId, sampleIdx, deviceFirstSample, transitIdx, neighbor, insertionPos);
+      out_trace[insertionPos] = neighbor != -1 ? neighbor : invalidVertex;
+    }
   }
 }
 
-template <int THREADS, bool COALESCE_CURAND_LOAD, bool HAS_EXPLICIT_TRANSITS>
+template <typename CCGApp, int THREADS, bool COALESCE_CURAND_LOAD, bool HAS_EXPLICIT_TRANSITS>
 __global__ void identityKernel(const int step, const VertexID_t deviceFirstSample, const VertexID_t invalidVertex,
                                 const VertexID_t *transitToSamplesKeys, const VertexID_t *transitToSamplesValues,
                                 const size_t transitToSamplesSize, CCGSample *samples, const size_t NumSamples,
@@ -1118,7 +1093,7 @@ __global__ void identityKernel(const int step, const VertexID_t deviceFirstSampl
   }
 }
 
-template <int THREADS, int CACHE_SIZE, bool CACHE_EDGES, bool CACHE_WEIGHTS, int TRANSITS_PER_THREAD, bool ONDEMAND_CACHING, int STATIC_CACHE_SIZE, int SUB_WARP_SIZE>
+template <typename CCGApp, int THREADS, int CACHE_SIZE, bool CACHE_EDGES, bool CACHE_WEIGHTS, int TRANSITS_PER_THREAD, bool ONDEMAND_CACHING, int STATIC_CACHE_SIZE, int SUB_WARP_SIZE>
 __global__ void threadBlockKernel(const int step, const VertexID_t deviceFirstSample,
                                   const VertexID_t invalidVertex,
                                   const VertexID_t *transitToSamplesKeys, const VertexID_t *transitToSamplesValues,
@@ -1341,7 +1316,7 @@ __global__ void threadBlockKernel(const int step, const VertexID_t deviceFirstSa
   }
 }
 
-template <int THREADS, int CACHE_SIZE, bool CACHE_EDGES, bool CACHE_WEIGHTS, bool COALESCE_GL_LOADS, int TRANSITS_PER_THREAD,
+template <typename CCGApp, int THREADS, int CACHE_SIZE, bool CACHE_EDGES, bool CACHE_WEIGHTS, bool COALESCE_GL_LOADS, int TRANSITS_PER_THREAD,
           bool COALESCE_CURAND_LOAD, bool ONDEMAND_CACHING, int STATIC_CACHE_SIZE, int SUB_WARP_SIZE>
 __global__ void gridKernel(const int step, const VertexID_t deviceFirstSample,
                             const VertexID_t invalidVertex,
@@ -1601,22 +1576,26 @@ __global__ void gridKernel(const int step, const VertexID_t deviceFirstSample,
   }
 }
 
-std::vector<dgl::aten::COOMatrix> doTransitParallelSampling(NextDoorData &nextDoorData, const std::vector<int64_t> &fanouts, const DGLContext &ctx)
+
+__global__ void setFristNode(VertexID_t* trace, VertexID_t* seeds, int length) {
+  VertexID_t threadId = threadIdx.x + blockDim.x * blockIdx.x;
+  trace[threadId * length] = seeds[threadId];
+}
+
+template <typename CCGApp>
+void doTransitParallelSampling(NextDoorData &nextDoorData, const DGLContext &ctx)
 {
   auto device = runtime::DeviceAPI::Get(ctx);
   cudaStream_t stream = runtime::getCurrentCUDAStream();
 
-  std::vector<dgl::aten::COOMatrix> ret;
-  int tot_step = fanouts.size();
-
+  int tot_step = CCGApp().steps();
   const auto maxNeighborsToSample = nextDoorData.maxNeighborsToSample;
 
   const size_t numDevices = nextDoorData.devices.size();
-  int64_t *d_fanouts = static_cast<int64_t *>(device->AllocWorkspace(ctx, sizeof(int64_t) * fanouts.size()));
-  device->CopyDataFromTo(fanouts.data(), 0, d_fanouts, 0, sizeof(int64_t) * fanouts.size(), DGLContext{kDGLCPU, 0}, ctx, DGLDataType{kDGLInt, 64, 1});
-  device->StreamSync(ctx, stream);
-  size_t finalSampleSize = getFinalSampleSize(fanouts);
 
+  d_fanouts = static_cast<int64_t *>(device->AllocWorkspace(ctx, sizeof(int64_t) * fanouts.size()));
+  device->CopyDataFromTo(fanouts.data(), 0, d_fanouts, 0, sizeof(int64_t) * fanouts.size(), DGLContext{kDGLCPU, 0}, ctx, DGLDataType{kDGLInt, 64, 1});
+  size_t finalSampleSize = CCGApp().getFinalSampleSize();
   // for(size_t deviceIdx = 0; deviceIdx < nextDoorData.devices.size(); deviceIdx++) {
   //   auto device = nextDoorData.devices[deviceIdx];
   //   CHK_CU(cudaSetDevice(device));
@@ -1770,8 +1749,14 @@ std::vector<dgl::aten::COOMatrix> doTransitParallelSampling(NextDoorData &nextDo
   // auto _outt = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch());
   // std::cout << "[PF] bg step_sample " << std::fixed << std::setprecision(7) << (double)(_outt.count() * 0.000001) << "\n";
 
+  // std::cout<<"\n**** before: totalThreads: "<<totEdgesToSampleAtStep<<std::endl;
+  // gpuprint<<<1,1>>>(nextDoorData.dTransitToSampleMapKeys[0], totEdgesToSampleAtStep);
+  // cudaDeviceSynchronize();
+  // gpuprint<<<1,1>>>(nextDoorData.dTransitToSampleMapValues[0], totEdgesToSampleAtStep);
+  // cudaDeviceSynchronize();
   for (int step = 0; step < tot_step; ++step)
-  { 
+  {
+    // std::cout<<"step "<<step<<std::endl;
     size_t numTransits = totNeighborsToSampleAtStep;
     std::vector<size_t> totalThreads = std::vector<size_t>(nextDoorData.devices.size());
     for (size_t i = 0; i < nextDoorData.devices.size(); i++)
@@ -1806,17 +1791,8 @@ std::vector<dgl::aten::COOMatrix> doTransitParallelSampling(NextDoorData &nextDo
     // CCGToDGLData *spl_data = new CCGToDGLData(nextDoorData.sampleNum*neighborsToSampleAtStep);
     // std::cout << spl_data << std::endl;
     const int64_t spl_len = totEdgesToSampleAtStep;
-    // const int64_t spl_len = nextDoorData.sampleNum * totEdgesToSampleAtStep;
-    dgl::NDArray picked_row = dgl::aten::NewIdArray(spl_len, ctx, sizeof(VertexID_t) * 8); // DGL_ARRAY
-    dgl::NDArray picked_col = dgl::aten::NewIdArray(spl_len, ctx, sizeof(VertexID_t) * 8);
-    dgl::NDArray picked_idx = dgl::aten::NewIdArray(spl_len, ctx, sizeof(EdgePos_t) * 8);
-    VertexID_t *out_rows = static_cast<VertexID_t *>(picked_row->data);
-    VertexID_t *out_cols = static_cast<VertexID_t *>(picked_col->data);
-    EdgePos_t *out_idxs = static_cast<EdgePos_t *>(picked_idx->data);
-    // std::cout << picked_row << std::endl;
-    // std::cout << picked_col << std::endl;
-    // std::cout << picked_idx << std::endl;
 
+    CCGApp().initStepSample(spl_len, ctx);
     for (size_t i = 0; i < nextDoorData.devices.size(); i++)
     {
       // 暂时只在一个device上做
@@ -1834,18 +1810,19 @@ std::vector<dgl::aten::COOMatrix> doTransitParallelSampling(NextDoorData &nextDo
         {
           // auto device = nextDoorData.devices[deviceIdx];
           // CHK_CU(cudaSetDevice(device));
+          // std::cout<<"totalThreads: "<<totalThreads[deviceIdx] << " trace_length: " << trace_length<<" tot_step: "<< tot_step<<std::endl;
           const VertexID_t deviceSampleStartPtr = PartStartPointer(nextDoorData.sampleNum, deviceIdx, numDevices);
           for (unsigned long threadsExecuted = 0; threadsExecuted < totalThreads[deviceIdx]; threadsExecuted += nextDoorData.maxThreadsPerKernel[deviceIdx])
           {
             size_t currExecutionThreads = min((size_t)nextDoorData.maxThreadsPerKernel[deviceIdx], totalThreads[deviceIdx] - threadsExecuted);
             // std::cout<<"totalThreads: "<<totalThreads[deviceIdx]<<std::endl;
             // std::cout<<"nextDoorData.sampleNum: "<<nextDoorData.sampleNum<<std::endl;
-            samplingKernel<TransitParallelMode::NextFuncExecution, 0><<<utils::thread_block_size(currExecutionThreads, N_THREADS), N_THREADS>>>(step,
-                                                                                                                                                threadsExecuted, currExecutionThreads, deviceSampleStartPtr, nextDoorData.INVALID_VERTEX,
-                                                                                                                                                (const VertexID_t *)nextDoorData.dTransitToSampleMapKeys[deviceIdx], (const VertexID_t *)nextDoorData.dTransitToSampleMapValues[deviceIdx],
-                                                                                                                                                totalThreads[deviceIdx], nextDoorData.dOutputSamples[deviceIdx], nextDoorData.sampleNum,
-                                                                                                                                                nextDoorData.dSamplesToTransitMapKeys[deviceIdx], nextDoorData.dSamplesToTransitMapValues[deviceIdx], finalSampleSize,
-                                                                                                                                                nullptr, nullptr, nullptr, nullptr, nextDoorData.dCurandStates[deviceIdx], (int)tot_step, d_fanouts, out_rows, out_cols, out_idxs);
+            samplingKernel<CCGApp, TransitParallelMode::NextFuncExecution, 0><<<utils::thread_block_size(currExecutionThreads, N_THREADS), N_THREADS>>>(
+                step, threadsExecuted, currExecutionThreads, deviceSampleStartPtr, nextDoorData.INVALID_VERTEX,
+                (const VertexID_t *)nextDoorData.dTransitToSampleMapKeys[deviceIdx], (const VertexID_t *)nextDoorData.dTransitToSampleMapValues[deviceIdx],
+                totalThreads[deviceIdx], nextDoorData.dOutputSamples[deviceIdx], nextDoorData.sampleNum,
+                nextDoorData.dSamplesToTransitMapKeys[deviceIdx], nextDoorData.dSamplesToTransitMapValues[deviceIdx], finalSampleSize,
+                nullptr, nullptr, nullptr, nullptr, nextDoorData.dCurandStates[deviceIdx], (int)tot_step, d_fanouts, out_rows, out_cols, out_idxs, out_trace, trace_length);
             CUDA_CALL(cudaGetLastError());
           }
         }
@@ -2266,16 +2243,18 @@ std::vector<dgl::aten::COOMatrix> doTransitParallelSampling(NextDoorData &nextDo
     if (step != tot_step - 1)
     {
       // add src nodes into dst
-      for (size_t deviceIdx = 0; deviceIdx < nextDoorData.devices.size(); deviceIdx++)
+      if (CCGApp().samplingType() == SamplingType::NeighborSampling)
       {
-        // auto device=nextDoorData.devices[deviceIdx];
-        // CHK_CU(cudaSetDevice(device));
-        device->CopyDataFromTo(nextDoorData.dTransitToSampleMapValues[deviceIdx], 0, nextDoorData.dSamplesToTransitMapKeys[deviceIdx], totEdgesToSampleAtStep * sizeof(VertexID_t), sizeof(VertexID_t) * totNeighborsToSampleAtStep, ctx, ctx, DGLDataType{kDGLInt, 64, 1});
-        device->CopyDataFromTo(nextDoorData.dTransitToSampleMapKeys[deviceIdx], 0, nextDoorData.dSamplesToTransitMapValues[deviceIdx], totEdgesToSampleAtStep * sizeof(VertexID_t), sizeof(VertexID_t) * totNeighborsToSampleAtStep, ctx, ctx, DGLDataType{kDGLInt, 64, 1});
-        // CHK_CU(cudaMemcpy(nextDoorData.dSamplesToTransitMapKeys[deviceIdx]+totEdgesToSampleAtStep, nextDoorData.dTransitToSampleMapValues[deviceIdx], sizeof(VertexID_t) * totNeighborsToSampleAtStep, cudaMemcpyDeviceToDevice));
-        // CHK_CU(cudaMemcpy(nextDoorData.dSamplesToTransitMapValues[deviceIdx]+totEdgesToSampleAtStep, nextDoorData.dTransitToSampleMapKeys[deviceIdx], sizeof(VertexID_t) * totNeighborsToSampleAtStep, cudaMemcpyDeviceToDevice));
-        numTransits = totNeighborsToSampleAtStep + totEdgesToSampleAtStep;
-        device->StreamSync(ctx, stream);
+        for (size_t deviceIdx = 0; deviceIdx < nextDoorData.devices.size(); deviceIdx++)
+        {
+          // auto device=nextDoorData.devices[deviceIdx];
+          // CHK_CU(cudaSetDevice(device));
+          device->CopyDataFromTo(nextDoorData.dTransitToSampleMapValues[deviceIdx], 0, nextDoorData.dSamplesToTransitMapKeys[deviceIdx], totEdgesToSampleAtStep * sizeof(VertexID_t), sizeof(VertexID_t) * totNeighborsToSampleAtStep, ctx, ctx, DGLDataType{kDGLInt, 64, 1});
+          device->CopyDataFromTo(nextDoorData.dTransitToSampleMapKeys[deviceIdx], 0, nextDoorData.dSamplesToTransitMapValues[deviceIdx], totEdgesToSampleAtStep * sizeof(VertexID_t), sizeof(VertexID_t) * totNeighborsToSampleAtStep, ctx, ctx, DGLDataType{kDGLInt, 64, 1});
+          // CHK_CU(cudaMemcpy(nextDoorData.dSamplesToTransitMapKeys[deviceIdx]+totEdgesToSampleAtStep, nextDoorData.dTransitToSampleMapValues[deviceIdx], sizeof(VertexID_t) * totNeighborsToSampleAtStep, cudaMemcpyDeviceToDevice));
+          // CHK_CU(cudaMemcpy(nextDoorData.dSamplesToTransitMapValues[deviceIdx]+totEdgesToSampleAtStep, nextDoorData.dTransitToSampleMapKeys[deviceIdx], sizeof(VertexID_t) * totNeighborsToSampleAtStep, cudaMemcpyDeviceToDevice));
+          numTransits = totNeighborsToSampleAtStep + totEdgesToSampleAtStep;
+        }
       }
 
       for (size_t deviceIdx = 0; deviceIdx < nextDoorData.devices.size(); deviceIdx++)
@@ -2298,39 +2277,47 @@ std::vector<dgl::aten::COOMatrix> doTransitParallelSampling(NextDoorData &nextDo
       }
       // CUDA_SYNC_DEVICE_ALL(nextDoorData);
       
-      for (size_t deviceIdx = 0; deviceIdx < nextDoorData.devices.size(); deviceIdx++)
+      // get unique tranist for next step
+      if (CCGApp().samplingType() == SamplingType::NeighborSampling)
       {
-        CUDA_CALL(cub::DeviceSelect::UniqueByKey(d_unique_temp_storage[deviceIdx], unique_temp_storage_bytes[deviceIdx],
-                                    nextDoorData.dTransitToSampleMapKeys[deviceIdx], nextDoorData.dTransitToSampleMapValues[deviceIdx],
-                                    nextDoorData.dTransitToSampleMapKeys[deviceIdx], nextDoorData.dTransitToSampleMapValues[deviceIdx],
-                                    d_num_selected_out[deviceIdx], numTransits));
-        // CHK_CU(cudaGetLastError());
-        device->StreamSync(ctx, stream);
-        device->CopyDataFromTo(d_num_selected_out[deviceIdx], 0, &totNeighborsToSampleAtStep, 0, sizeof(VertexID_t), ctx, DGLContext{kDGLCPU, 0}, DGLDataType{kDGLInt, 64, 1});
-        // CHK_CU(cudaMemcpy(&totNeighborsToSampleAtStep, d_num_selected_out[deviceIdx], sizeof(VertexID_t), cudaMemcpyDeviceToHost));
-        // std::cout<<"\n**** num_selected_out: "<<totNeighborsToSampleAtStep<<std::endl<<"TransitToSampleMapKeys:\n";
-        // gpuprint<<<1,1>>>(nextDoorData.dTransitToSampleMapKeys[deviceIdx], totNeighborsToSampleAtStep);
-        // cudaDeviceSynchronize();
-        // std::cout<<"TransitToSampleMapValues:\n";
-        // gpuprint<<<1,1>>>(nextDoorData.dTransitToSampleMapValues[deviceIdx], totNeighborsToSampleAtStep);
-        // cudaDeviceSynchronize();
+        for (size_t deviceIdx = 0; deviceIdx < nextDoorData.devices.size(); deviceIdx++)
+        {
+          CUDA_CALL(cub::DeviceSelect::UniqueByKey(d_unique_temp_storage[deviceIdx], unique_temp_storage_bytes[deviceIdx],
+                                      nextDoorData.dTransitToSampleMapKeys[deviceIdx], nextDoorData.dTransitToSampleMapValues[deviceIdx],
+                                      nextDoorData.dTransitToSampleMapKeys[deviceIdx], nextDoorData.dTransitToSampleMapValues[deviceIdx],
+                                      d_num_selected_out[deviceIdx], numTransits));
+          // CHK_CU(cudaGetLastError());
+          device->StreamSync(ctx, stream);
+          device->CopyDataFromTo(d_num_selected_out[deviceIdx], 0, &totNeighborsToSampleAtStep, 0, sizeof(VertexID_t), ctx, DGLContext{kDGLCPU, 0}, DGLDataType{kDGLInt, 64, 1});
+          // CHK_CU(cudaMemcpy(&totNeighborsToSampleAtStep, d_num_selected_out[deviceIdx], sizeof(VertexID_t), cudaMemcpyDeviceToHost));
+          // std::cout<<"\n**** num_selected_out: "<<totNeighborsToSampleAtStep<<std::endl<<"TransitToSampleMapKeys:\n";
+          // gpuprint<<<1,1>>>(nextDoorData.dTransitToSampleMapKeys[deviceIdx], totNeighborsToSampleAtStep);
+          // cudaDeviceSynchronize();
+          // std::cout<<"TransitToSampleMapValues:\n";
+          // gpuprint<<<1,1>>>(nextDoorData.dTransitToSampleMapValues[deviceIdx], totNeighborsToSampleAtStep);
+          // cudaDeviceSynchronize();
+        }
+        // CUDA_SYNC_DEVICE_ALL(nextDoorData);
       }
-      // CUDA_SYNC_DEVICE_ALL(nextDoorData);
     }
 
-    auto _picked_row = picked_row.CreateView({spl_len}, picked_row->dtype);
-    auto _picked_col = picked_col.CreateView({spl_len}, picked_col->dtype);
-    auto _picked_idx = picked_idx.CreateView({spl_len}, picked_idx->dtype);
-    // std::cout << "CCGSample COO Matrix: length: " << spl_len << std::endl;
-    // gpuprint<<<1,1>>>(out_rows, spl_len);
-    // cudaDeviceSynchronize();
-    // gpuprint<<<1,1>>>(out_cols, spl_len);
-    // cudaDeviceSynchronize();
-    // gpuprint<<<1,1>>>(out_idxs, spl_len);
-    // cudaDeviceSynchronize();
-    ret.push_back(dgl::aten::COOMatrix(nextDoorData.n_nodes, nextDoorData.n_nodes, _picked_col, _picked_row, _picked_idx));
-  }
+    CCGApp().procStepSample();
 
+    // std::cout<<"\n**** step " << step << ", totalThreads: "<<totalThreads[0]<<std::endl;
+    // gpuprint<<<1,1>>>(nextDoorData.dTransitToSampleMapKeys[0], totalThreads[0]);
+    // device->StreamSync(ctx, stream);
+    // gpuprint<<<1,1>>>(nextDoorData.dTransitToSampleMapValues[0], totalThreads[0]);
+    // device->StreamSync(ctx, stream);
+
+    // std::cout << "CCGSample COO Matrix: length: " << num_edges << std::endl;
+    // gpuprint<<<1,1>>>(picked_row_data, num_edges);
+    // cudaDeviceSynchronize();
+    // gpuprint<<<1,1>>>(picked_col_data, num_edges);
+    // cudaDeviceSynchronize();
+    // gpuprint<<<1,1>>>(picked_idx_data, num_edges);
+    // cudaDeviceSynchronize();
+    // device->StreamSync(ctx, stream);
+  }
   // _outt = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch());
   // std::cout << "[PF] ed step_sample " << std::fixed << std::setprecision(7) << (double)(_outt.count() * 0.000001) << "\n";
 
@@ -2355,7 +2342,7 @@ std::vector<dgl::aten::COOMatrix> doTransitParallelSampling(NextDoorData &nextDo
   }
 
   // CHK_CU(cudaFree(d_fanouts));
-  return ret;
+  return;
 }
 
 __global__ void fullsamplingKernel(VertexID_t *d_seed_nodes, VertexID_t seed_node_size, EdgePos_t* degoffset, VertexID_t* out_rows, VertexID_t* out_cols, EdgePos_t* out_idxs)
@@ -2413,27 +2400,25 @@ std::vector<dgl::aten::COOMatrix> CCGSampleNeighbors(uint64_t n_nodes, void *gpu
 {
   const auto& ctx = seed_nodes_arr->ctx;
   auto device = runtime::DeviceAPI::Get(ctx);
-  // auto auto &fctx=aten::GetContextOf(fanouts);
-  // std::cout<<seed_nodes_arr->ctx.device_type<<" "<<kDGLCUDA<<std::endl;
+  CCGNeighborApp().init(fanouts, ctx);
+
   // size_t free, free1, tot;
   // CUDA_CALL(cudaMemGetInfo(&free, &tot));
-  // std::cout<<"seed_node "<<seed_nodes_arr.NumElements()<<std::endl;
+  
+  // std::cout<<"CCGSampleNeighbors: "<<"seed_node length "<<seed_nodes_arr.NumElements()<<" device: "seed_nodes_arr->ctx.device_type<<" "<<kDGLCUDA<<std::endl;
   // gpuprint<<<1,1>>>(static_cast<VertexID_t*> (seed_nodes_arr->data), seed_nodes_arr.NumElements());
   // cudaDeviceSynchronize();
 
   // auto _outt = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch());
   // std::cout << "[PF] bg cu_initspl " << std::fixed << std::setprecision(7) << (double)(_outt.count() * 0.000001) << "\n";
-  // CUDA_SYNC_DEVICE_ALL((*nextDoorData));
-  // _outt = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch());
-  // std::cout << "[PF] ed syncNextDoorData " << std::fixed << std::setprecision(7) << (double)(_outt.count() * 0.000001) << "\n";
-  // std::cout<<"CCGSampleNeighbors: seed_nodes.size " << seed_nodes.size()<<std::endl;
-  initializeNextDoorSample(*nextDoorData, seed_nodes_arr, (int)fanouts.size());
+  initializeNextDoorSample<CCGNeighborApp>(*nextDoorData, seed_nodes_arr, fanouts.size());
   // _outt = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch());
   // std::cout << "[PF] ed cu_initspl " << std::fixed << std::setprecision(7) << (double)(_outt.count() * 0.000001) << "\n";
 
   // _outt = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch());
   // std::cout << "[PF] bg cu_dospl " << std::fixed << std::setprecision(7) << (double)(_outt.count() * 0.000001) << "\n";
-  auto ret = doTransitParallelSampling(*nextDoorData, fanouts, ctx);
+
+  doTransitParallelSampling<CCGNeighborApp>(*nextDoorData, ctx);
 
   // CUDA_CALL(cudaMemGetInfo(&free1, &tot));
   // std::cout << "[PF] stat CCGSampleNeighbors "<< (free-free1)/1024/1024 << std::endl;
@@ -2441,21 +2426,27 @@ std::vector<dgl::aten::COOMatrix> CCGSampleNeighbors(uint64_t n_nodes, void *gpu
   // std::cout << "[PF] ed cu_dospl " << std::fixed << std::setprecision(7) << (double)(_outt.count() * 0.000001) << "\n";
 
   // freeDeviceData(nextDoorData);
-  return ret;
+  return vecCOO;
 }
+
 
 ////////////////////////////////
 // Random walk sampling
 ////////////////////////////////
 
-IdArray CCGRandomWalk(uint64_t n_nodes, void *gpu_ccg, NextDoorData *nextDoorData, IdArray seeds, int64_t trace_length)
+IdArray CCGRandomWalk(uint64_t n_nodes, void *gpu_ccg, NextDoorData *nextDoorData, IdArray seeds, int64_t length)
 {
   const auto& ctx = seeds->ctx;
   auto device = runtime::DeviceAPI::Get(ctx);
-  int64_t num_seeds = seeds.NumElements();
-  // initializeNextDoorSample(nextDoorData, seeds, (int)trace_length);
-  IdArray traces = IdArray::Empty({num_seeds, trace_length}, seeds->dtype, ctx);
-  // auto ret = doTransitParallelSampling(nextDoorData, length, ctx);
+  cudaStream_t stream = runtime::getCurrentCUDAStream();
+
+  // std::cout<<ctx.device_type<<" "<<kDGLCUDA<<std::endl;
+  
+  CCGRandomWalkApp().init(seeds, length, ctx);
+  setFristNode<<<utils::thread_block_size((unsigned long)seeds.NumElements(), 256UL), 256UL>>>(out_trace, seeds.Ptr<VertexID_t>(), trace_length);
+  initializeNextDoorSample<CCGRandomWalkApp>(*nextDoorData, seeds, (int)trace_length - 1);
+  // std::cout<< "seeds size: " << seeds.NumElements() << " trace length: " << trace_length << std::endl;
+  doTransitParallelSampling<CCGRandomWalkApp>(*nextDoorData, ctx);
   return traces;
 }
 
@@ -2541,14 +2532,10 @@ std::vector<dgl::aten::COOMatrix> CCGSampleFullLayers(uint64_t n_nodes, void *gp
 }
 
 // } // namespace sampling
-} // namespace dgl
 
 ////////////////////////////////
 // Labor sampling
 ////////////////////////////////
-
-namespace dgl {
-// namespace aten{
 
 using namespace dgl::aten::cuda;
 
@@ -2804,6 +2791,7 @@ __global__ void _CCGRowWiseLayerSampleDegreeKernel(
     out_row += BLOCK_CTAS;
   }
 }
+
 
 }  // namespace
 
@@ -3260,5 +3248,7 @@ CCGLaborSampling<kDGLCUDA, int64_t, float>(
 template std::pair<COOMatrix, FloatArray>
 CCGLaborSampling<kDGLCUDA, int64_t, double>(
     void *, VertexID_t, IdArray, int64_t, FloatArray, int, IdArray, IdArray);
-// } // namespace aten
+
+} // namespace tcpdgl
+
 }  // namespace dgl

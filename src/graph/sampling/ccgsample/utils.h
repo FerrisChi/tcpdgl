@@ -12,6 +12,10 @@
 
 #include "ccg_sample.h"
 
+namespace dgl{
+
+namespace tcpdgl{
+
 #define DIVUP(x,y) (((x) + ((y) - 1))/(y))
 #define ROUNDUP(x,y) (DIVUP(x,y)*(y))
 #define FULL_WARP_MASK 0xffffffff
@@ -472,4 +476,7 @@ namespace LoadBalancing {
 
 };
 
+} // namespace tcpdgl
+
+} // namespace dgl
 #endif

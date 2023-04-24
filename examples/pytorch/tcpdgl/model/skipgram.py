@@ -328,6 +328,10 @@ class SkipGramModel(nn.Module):
         """
         lr = self.lr
 
+        # print('batch_size', self.batch_size)
+        # print('batch_walks', batch_walks)
+        # print('neg_nodes', neg_nodes)
+        # input()
         # [batch_size, walk_length]
         if isinstance(batch_walks, list):
             nodes = torch.stack(batch_walks)
