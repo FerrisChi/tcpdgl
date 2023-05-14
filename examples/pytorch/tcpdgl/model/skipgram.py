@@ -559,7 +559,7 @@ class SkipGramModel(nn.Module):
     def save_embedding_pt_dgl_graph(self, dataset, file_name):
         """For ogb leaderboard"""
         embedding = torch.zeros_like(self.u_embeddings.weight.cpu().data)
-        valid_seeds = torch.LongTensor(dataset.valid_seeds)
+        valid_seeds = torch.LongTensor(dataset.valid_seeds.cpu())
         valid_embedding = self.u_embeddings.weight.cpu().data.index_select(
             0, valid_seeds
         )

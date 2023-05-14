@@ -51,7 +51,7 @@ class SAGE(nn.Module):
         g.ndata["h"] = g.ndata["feat"]
         sampler = dgl.dataloading.MultiLayerFullNeighborSampler(1, prefetch_node_feats=["h"])
         for l, layer in enumerate(self.layers):
-            dataloader = DataLoader(
+            dataloader = CCGDataLoader(
                 g,
                 torch.arange(g.num_nodes(), device=device),
                 sampler,

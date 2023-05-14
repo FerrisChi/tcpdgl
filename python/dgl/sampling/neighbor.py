@@ -842,12 +842,12 @@ def select_topk(
 
 DGLGraph.select_topk = utils.alias_func(select_topk)
 
-def ccg_sample_neighbors(g, seed_nodes, fanouts,
+def ccg_sample_neighbors(g, seed_nodes, fanouts, load_balancing = True,
                          copy_ndata=True, copy_edata=True, output_device=None):
     if not dist.is_initialized() or dist.get_rank() == 0:
         pflogger.info('bg sample.capi %f', time.time())
     fanouts_array = F.tensor(fanouts, dtype=F.int64).flip(0)
-    subgidices = _CAPI_CCGSampleNeighbors(g.ccg.ccg_data, F.to_dgl_nd(seed_nodes), F.to_dgl_nd(fanouts_array))
+    subgidices = _CAPI_CCGSampleNeighbors(g.ccg.ccg_data, F.to_dgl_nd(seed_nodes), F.to_dgl_nd(fanouts_array), load_balancing)
     if not dist.is_initialized() or dist.get_rank() == 0:
         pflogger.info('ed sample.capi %f', time.time())
         
@@ -856,13 +856,9 @@ def ccg_sample_neighbors(g, seed_nodes, fanouts,
     blocks = []
     i=0
     for subgidx in subgidices:
-        fanout = fanouts[i]
-        # print('[PF] bg sample.get_subg_{}'.format(fanout), time.time())
         induced_edges = subgidx.induced_edges
         subg = DGLGraph(subgidx.graph)
-        # print('[PF] ed sample.get_subg_{}'.format(fanout), time.time())
 
-        # print('[PF] bg sample.copy_data_{}'.format(fanout), time.time())
         if copy_ndata: # label, feat...
             node_frames = utils.extract_node_subframes(g, None)
             utils.set_new_frames(subg, node_frames=node_frames)
@@ -870,18 +866,19 @@ def ccg_sample_neighbors(g, seed_nodes, fanouts,
         if copy_edata:
             edge_frames = utils.extract_edge_subframes(g, induced_edges)
             utils.set_new_frames(subg, edge_frames=edge_frames)
-        # print('[PF] ed sample.copy_data_{}'.format(fanout), time.time())
 
         eid = subg.edata[EID]
-        # if not dist.is_initialized() or dist.get_rank() == 0:
-        #     pflogger.info('bg sample.to_block %f', time.time())
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            pflogger.info('bg sample.to_block %f', time.time())
         block = to_block(subg, seed_nodes)
         block.edata[EID] = eid
         seed_nodes = block.srcdata['_ID']
         blocks.insert(0, block)
-        # if not dist.is_initialized() or dist.get_rank() == 0:
-        #     pflogger.info('ed sample.to_block %f', time.time())
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            pflogger.info('ed sample.to_block %f', time.time())
+        # print(f'finish to_block_{i}')
         i+=1
+        
 
     return seed_nodes, output_nodes, blocks
 

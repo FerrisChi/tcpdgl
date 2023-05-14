@@ -208,6 +208,8 @@ def random_walk(
             p_nd.append(prob_nd)
 
     # Actual random walk
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        pflogger.info('bg sample.capi %f', time.time())
     if restart_prob is None:
         traces, eids, types = _CAPI_DGLSamplingRandomWalk(
             gidx, nodes, metapath, p_nd
@@ -223,6 +225,9 @@ def random_walk(
         )
     else:
         raise TypeError("restart_prob should be float or Tensor.")
+    
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        pflogger.info('ed sample.capi %f', time.time())
 
     traces = F.from_dgl_nd(traces)
     types = F.from_dgl_nd(types)
@@ -237,7 +242,8 @@ def ccg_random_walk(
     length=None,
     prob=None,
     restart_prob=None,
-    return_eids=False
+    return_eids=False,
+    load_balacing=False
 ):
     # n_etypes = len(g.canonical_etypes)
     # n_ntypes = len(g.ntypes)
@@ -284,7 +290,7 @@ def ccg_random_walk(
         pflogger.info('bg sample.capi %f', time.time())
     # Actual random walk
     if restart_prob is None:
-        traces = _CAPI_CCGSamplingRandomWalk(gdata, nodes, length)
+        traces = _CAPI_CCGSamplingRandomWalk(gdata, nodes, length, load_balacing)
     elif F.is_tensor(restart_prob):
         raise ValueError('Do not support random walk with stepwise restart.')
         restart_prob = F.to_dgl_nd(restart_prob)

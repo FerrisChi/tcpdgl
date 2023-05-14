@@ -30,8 +30,9 @@ const bool useGridKernel = true;
 const bool useSubWarpKernel = false;
 const bool useThreadBlockKernel = true;
 const bool combineTwoSampleStores = false;
-const bool enableLoadBalancing = false;
-
+// const bool enableLoadBalancing = true;
+const bool uniqueseeds = true;
+const bool addsrc = true;
 // extern variables for sampling
 // graph info
 extern VertexID_t n_nodes;
@@ -290,8 +291,9 @@ class CCGNeighborApp {
 public:
   
   __host__
-  void init(const std::vector<int64_t> &_fanouts, const DGLContext &ctx)
+  void init(VertexID_t _n_nodes, const std::vector<int64_t> &_fanouts, const DGLContext &ctx)
   {
+    n_nodes = _n_nodes;
     std::vector<int64_t> f_copy(_fanouts.begin(), _fanouts.end());
     fanouts = std::move(f_copy);
     vecCOO.clear();
@@ -327,7 +329,14 @@ public:
     // cudaDeviceSynchronize();
     // gpuprint<<<1,1>>>(out_idxs, spl_len);
     // cudaDeviceSynchronize();
+    // vecCOO.push_back(dgl::aten::COOMatrix(n_nodes, n_nodes, _picked_col, _picked_row, _picked_idx));
     vecCOO.emplace_back(n_nodes, n_nodes, _picked_col, _picked_row, _picked_idx);
+    // picked_row = dgl::NDArray();
+    // picked_col = dgl::NDArray();
+    // picked_idx = dgl::NDArray();
+    // out_rows = nullptr;
+    // out_cols = nullptr;
+    // out_idxs = nullptr;
   }
 
   __host__ int steps() {return fanouts.size();}
@@ -339,7 +348,7 @@ public:
     size_t neighborsToSampleAtStep = 1;
     for (auto step : fanouts)
     {
-      neighborsToSampleAtStep *= step;
+      neighborsToSampleAtStep *= step + 1;
       finalSampleSize += neighborsToSampleAtStep;
     }
     return finalSampleSize;
@@ -414,8 +423,9 @@ public:
   }
 
   __host__
-  void init(const IdArray &seeds, int length, const DGLContext &ctx)
+  void init(VertexID_t _n_nodes, const IdArray &seeds, int length, const DGLContext &ctx)
   {
+    n_nodes = _n_nodes;
     int64_t num_seeds = seeds.NumElements();
     trace_length = length;
     traces = IdArray::Empty({num_seeds, trace_length}, seeds->dtype, ctx);
@@ -443,7 +453,7 @@ public:
   __host__
   void initStepSample(const int64_t &_spl_len, const DGLContext &ctx)
   {
-    spl_len = _spl_len;
+    spl_len = 0;
   }
 
   __host__
@@ -520,7 +530,7 @@ public:
   // }
 };
 
-std::vector<dgl::aten::COOMatrix> CCGSampleNeighbors(uint64_t n_nodes, void *gpu_ccg, void *crs, NextDoorData *nextDoorData, IdArray &seed_nodes, const std::vector<int64_t> &fanouts);
+std::vector<dgl::aten::COOMatrix> CCGSampleNeighbors(uint64_t n_nodes, void *gpu_ccg, void *crs, NextDoorData *nextDoorData, IdArray &seed_nodes, const std::vector<int64_t> &fanouts, bool loadBalancing);
 void *CCGCopyTo(uint64_t n_nodes, int ubl, const std::vector<uint32_t> &g_data, const std::vector<uint32_t> &g_offset, const DGLContext &ctx);
 void *InitCurand(const DGLContext &ctx);
 
@@ -547,7 +557,7 @@ std::pair<dgl::aten::COOMatrix, FloatArray> CCGLaborSampling(
 EdgePos_t CCGNumEdges();
 DegreeArray CCGOutGegrees(IdArray vids);
 
-IdArray CCGRandomWalk(uint64_t n_nodes, void *gpu_ccg, NextDoorData *nextDoorData, IdArray seeds, int64_t length);
+IdArray CCGRandomWalk(uint64_t n_nodes, void *gpu_ccg, NextDoorData *nextDoorData, IdArray seeds, int64_t length, bool loadBalacing);
 
 }
 // }  // namespace sampling

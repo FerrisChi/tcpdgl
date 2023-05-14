@@ -15,7 +15,7 @@ import pandas
 import time
 import argparse
 
-__all__ = ['CCGDataset', 'LoadDataset']
+__all__ = ['CCGDataset', 'LoadDataset', 'load_from_ogbl_with_name']
 
 class CCGDataset(DGLDataset):
     def __init__(self, _graph_name, _ccg_name, _graph_path, _feat_path=None, _data_path=None, _num_classes=50, _feat_dim=10, _feat_lr=-10.0, _feat_rr=10.0):
@@ -48,6 +48,9 @@ class CCGDataset(DGLDataset):
             self.graph._edge_frames = [dgl.frame.Frame()]
         else:
             self.num_classes = self.graph.ndata['label'].max() + 1
+
+        if isinstance(self.num_classes, torch.Tensor):
+            self.num_classes = self.num_classes.item()
     
     def __getitem__(self, i):
         assert i == 0, 'This dataset has only one graph'
@@ -129,9 +132,8 @@ def LoadDataset(graph_name, n_feat):
     else:
         if os.path.exists(cache_path):
             graph, label_dict = load_graphs(cache_path)
-
             graph = graph[0]
-            num_classes = torch.max(graph.ndata['label'])+1
+            num_classes = torch.max(graph.ndata['label']) + 1 if 'label' in graph.ndata else 50
         else:
             file_path = os.path.join(data_path, graph_name, 'un_sort')
             num_classes = 50
@@ -163,12 +165,18 @@ def LoadDataset(graph_name, n_feat):
         test_idx = torch.tensor(idx[int(graph.num_nodes() * train_pc) : int(graph.num_nodes() * (train_pc + test_pc))])
         valid_idx = torch.tensor(idx[int(graph.num_nodes() * (train_pc + test_pc)) : graph.num_nodes()])
 
-    print('n_nodes: {}, n_edges: {}, feat: {}, label: {}, num_class: {}'.format(
-        graph.num_nodes(), graph.num_edges(), graph.ndata['feat'].size(), graph.ndata['label'].size(), num_classes))
+    if isinstance(num_classes, torch.Tensor):
+        num_classes = num_classes.item()
+
+    print('n_nodes: {}, n_edges: {}'.format(
+        graph.num_nodes(), graph.num_edges()))
+    if 'feat' in graph.ndata and 'label' in graph.ndata:
+        print('feat: {}, label: {}, num_class: {}'.format(
+            graph.ndata['feat'].size(), graph.ndata['label'].size(), num_classes))
     return graph, train_idx, valid_idx, test_idx, num_classes
 
 def load_from_ogbl_with_name(name, load_ccg=False, data_path = '/mnt/data2/chijj/data', save_dgl = False):
-    choices = ["ogbl-collab", "ogbl-ddi", "ogbl-ppa", "ogbl-citation"]
+    choices = ["ogbl_collab", "ogbl_ddi", "ogbl_ppa", "ogbl_citation"]
     assert name in choices, "name must be selected from " + str(choices)
 
     if load_ccg:
@@ -176,7 +184,6 @@ def load_from_ogbl_with_name(name, load_ccg=False, data_path = '/mnt/data2/chijj
         file_path = os.path.join(data_path, name.replace('-','_'), "tc1_k32_h2")
         ck_feat_path = os.path.join(data_path, name.replace('-','_'), "feat")
         feat_path = ck_feat_path if os.path.isfile(ck_feat_path) else None
-        print(file_path, feat_path)
         graph = load_ccg_for(graph, file_path, feat_path)
         # graph = graph.to('cuda:0')
         # print(graph.ccg.num_nodes(), graph.ccg.num_edges())
@@ -187,7 +194,7 @@ def load_from_ogbl_with_name(name, load_ccg=False, data_path = '/mnt/data2/chijj
                 graph, label_dict = load_graphs(cache_path)
                 graph = graph[0]
         else:
-            dataset = DglLinkPropPredDataset(name, data_path)
+            dataset = DglLinkPropPredDataset(name.replace('_', '-'), data_path)
             graph = dataset[0]
         print(graph.num_nodes(), graph.num_edges())
 
@@ -204,8 +211,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--name",
         type=str,
-        choices=["ogbl-collab", "ogbl-ddi", "ogbl-ppa", "ogbl-citation"],
-        default="ogbl-ddi",
+        choices=["ogbl_collab", "ogbl_ddi", "ogbl_ppa", "ogbl_citation"],
+        default="ogbl_ddi",
         help="name of datasets by ogb",
     )
     parser.add_argument(

@@ -86,6 +86,8 @@ python3 mlp.py --device 0 --runs 10 --use_node_embedding
 
 ogbl-ddi
 ```
+python dw_bm.py --load_from_ogbl --graph_name ogbl_ddi --save_in_pt --output_emb_file ddi-embedding.pt --num_walks 50 --window_size 2 --walk_length 80 --lr 0.1 --negative 1 --neg_weight 1 --lap_norm 0.05 --print_interval 2000 --print_loss --use_context_weight
+
 python3 deepwalk.py --ogbl_name ogbl-ddi --load_from_ogbl --save_in_pt --output_emb_file ddi-embedding.pt --num_walks 50 --window_size 2 --walk_length 80 --lr 0.1 --negative 1 --neg_weight 1 --lap_norm 0.05 --only_gpu --gpus 0 --num_threads 4 --print_interval 2000 --print_loss --batch_size 16 --use_context_weight
 cd ./ogb/blob/master/examples/linkproppred/ddi/
 cp embedding_pt_file_path ./
@@ -94,6 +96,8 @@ python3 mlp.py --device 0 --runs 10 --epochs 100
 
 ogbl-ppa
 ```
+python3 dw_bm.py --graph_name ogbl_ppa --load_from_ogbl --save_in_pt --output_emb_file ppa-embedding.pt --negative 1 --neg_weight 1 --batch_size 4800 --print_interval 2000 --print_loss --window_size 1 --num_walks 30 --walk_length 80 --lr 0.1 --lap_norm 0.02 
+
 python3 deepwalk.py --ogbl_name ogbl-ppa --load_from_ogbl --save_in_pt --output_emb_file ppa-embedding.pt --negative 1 --neg_weight 1 --batch_size 64 --print_interval 2000 --print_loss --window_size 1 --num_walks 30 --walk_length 80 --lr 0.1 --lap_norm 0.02 --mix --gpus 0 --num_threads 4
 cp embedding_pt_file_path ./
 python3 mlp.py --device 2 --runs 10

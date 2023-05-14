@@ -8,6 +8,7 @@ from dgl.sampling.randomwalks import ccg_random_walk, random_walk
 import time
 import torch
 import torch.distributed as dist
+from ..random import choice
 from ..utils import pflogger
 from .. import backend as F, utils
 from .._ffi.function import _init_api
@@ -209,8 +210,12 @@ class MultiLayerFullNeighborSampler(NeighborSampler):
     def __init__(self, num_layers, **kwargs):
         super().__init__([-1] * num_layers, **kwargs)
 
+#####################
+# CCG Sampler
+#####################
+
 class CCGNeighborSampler(BlockSampler):
-    def __init__(self, fanouts,
+    def __init__(self, fanouts, load_balancing = True,
                  prefetch_node_feats=None, prefetch_labels=None, prefetch_edge_feats=None,
                  output_device=None):
         super().__init__(prefetch_node_feats=prefetch_node_feats,
@@ -218,17 +223,23 @@ class CCGNeighborSampler(BlockSampler):
                          prefetch_edge_feats=prefetch_edge_feats,
                          output_device=output_device)
         self.fanouts = fanouts
+        self.load_balancing = load_balancing
+        self.initnxdr = False
+        
 
     def init_nextdoor(self, ccg, batch_size, fanout, ctx):
+        if self.initnxdr:
+            return
         if isinstance(ctx, torch.device):
             ctx = utils.to_dgl_context(ctx)
         _CAPI_AllocNextDoorData(ccg.ccg_data, batch_size, fanout, ctx.device_type, ctx.device_id)
+        self.initnxdr = True
 
     def sample_blocks(self, g, seed_nodes, exclude_eids=None):
         # g is ccg graph here
         if not dist.is_initialized() or dist.get_rank() == 0:
             pflogger.info('bg sampler.sample_blocks %f', time.time())
-        seed_nodes, output_nodes, sample_blocks = g.ccg_sample_neighbors(seed_nodes, self.fanouts, copy_ndata=False, copy_edata=True)
+        seed_nodes, output_nodes, sample_blocks = g.ccg_sample_neighbors(seed_nodes, self.fanouts, load_balancing = self.load_balancing, copy_ndata=False, copy_edata=True)
         if not dist.is_initialized() or dist.get_rank() == 0:
             pflogger.info('ed sampler.sample_blocks %f', time.time())
         return seed_nodes, output_nodes, sample_blocks
@@ -259,7 +270,7 @@ class CCGMultiLayerFullNeighborSampler(BlockSampler):
         return seed_nodes, output_nodes, sample_blocks
     
 class DeepwalkSampler(object):
-    def __init__(self, G, seeds, batch_size, walk_length, ccg_sample, device=None):
+    def __init__(self, G, seeds, batch_size, walk_length, ccg_sample, device=None, load_balacing=False):
         """random walk sampler
 
         Parameter
@@ -273,6 +284,8 @@ class DeepwalkSampler(object):
         self.batch_size = batch_size
         self.walk_length = walk_length
         self.ccg_sample = ccg_sample
+        self.load_balacing = load_balacing
+        self.initnxdr = False
         if self.ccg_sample:
             self.seeds = self.seeds.to('cuda:0')
             self.init_nextdoor(batch_size, F.to_dgl_nd(torch.tensor([walk_length])), F.context(self.seeds))
@@ -280,17 +293,102 @@ class DeepwalkSampler(object):
             self.seeds = self.seeds.to(device)
     
     def init_nextdoor(self, batch_size, fanout, ctx):
+        if self.initnxdr:
+            return
         if isinstance(ctx, torch.device):
             ctx = utils.to_dgl_context(ctx)
         _CAPI_AllocNextDoorData(self.G.ccg.ccg_data, batch_size, fanout, ctx.device_type, ctx.device_id)
+        self.initnxdr = True
 
     def sample(self, seeds):
         if not dist.is_initialized() or dist.get_rank() == 0:
             pflogger.info('bg sampler.sample_blocks %f', time.time())
         if self.ccg_sample:
-            walks = ccg_random_walk(self.G, seeds, length=self.walk_length)[0]
+            walks = ccg_random_walk(self.G, seeds, length=self.walk_length, load_balacing=self.load_balacing)[0]
         else:
             walks = random_walk(self.G, seeds, length=self.walk_length - 1)[0]
         if not dist.is_initialized() or dist.get_rank() == 0:
             pflogger.info('ed sampler.sample_blocks %f', time.time())
         return walks
+
+class CCGLaborSampler(BlockSampler):
+    def __init__(
+        self,
+        fanouts,
+        edge_dir="in",
+        prob=None,
+        importance_sampling=0,
+        layer_dependency=False,
+        prefetch_node_feats=None,
+        prefetch_labels=None,
+        prefetch_edge_feats=None,
+        output_device=None,
+    ):
+        super().__init__(
+            prefetch_node_feats=prefetch_node_feats,
+            prefetch_labels=prefetch_labels,
+            prefetch_edge_feats=prefetch_edge_feats,
+            output_device=output_device,
+        )
+        self.fanouts = fanouts
+        self.edge_dir = edge_dir
+        self.prob = prob
+        self.importance_sampling = importance_sampling
+        self.layer_dependency = layer_dependency
+        self.set_seed()
+        self.initnxdr = False
+
+    def set_seed(self, random_seed=None):
+        if random_seed is None:
+            self.random_seed = choice(1e18, 1)
+        else:
+            self.random_seed = F.tensor(random_seed, F.int64)
+
+    def init_nextdoor(self, ccg, batch_size, fanout, ctx):
+        if self.initnxdr:
+            return
+        if isinstance(ctx, torch.device):
+            ctx = utils.to_dgl_context(ctx)
+        _CAPI_AllocNextDoorData(ccg.ccg_data, batch_size, fanout, ctx.device_type, ctx.device_id)
+        self.initnxdr = True
+
+    def sample_blocks(self, g, seed_nodes, exclude_eids=None):
+        output_nodes = seed_nodes
+        blocks = []
+        for i, fanout in enumerate(reversed(self.fanouts)):
+            random_seed_i = F.zerocopy_to_dgl_ndarray(
+                self.random_seed + (i if not self.layer_dependency else 0)
+            )
+            # print(f'seed_nodes: {seed_nodes}')
+            frontier, importances = g.ccg_sample_labors(
+                seed_nodes,
+                fanout,
+                edge_dir=self.edge_dir,
+                prob=self.prob,
+                importance_sampling=self.importance_sampling,
+                random_seed=random_seed_i,
+                copy_ndata=False,
+                copy_edata=True,
+                output_device=self.output_device,
+                exclude_edges=exclude_eids,
+            )
+            eid = frontier.edata[EID]
+            if not dist.is_initialized() or dist.get_rank() == 0:
+                pflogger.info('bg sample.to_block %f', time.time())
+            block = to_block(
+                frontier, seed_nodes, include_dst_in_src=True, src_nodes=None
+            )
+            if not dist.is_initialized() or dist.get_rank() == 0:
+                pflogger.info('ed sample.to_block %f', time.time())
+            block.edata[EID] = eid
+            if len(g.canonical_etypes) > 1:
+                for etype, importance in zip(g.canonical_etypes, importances):
+                    if importance.shape[0] == block.num_edges(etype):
+                        block.edata["edge_weights"][etype] = importance
+            elif importances[0].shape[0] == block.num_edges():
+                block.edata["edge_weights"] = importances[0]
+            seed_nodes = block.srcdata['_ID']
+            blocks.insert(0, block)
+
+        self.set_seed()
+        return seed_nodes, output_nodes, blocks

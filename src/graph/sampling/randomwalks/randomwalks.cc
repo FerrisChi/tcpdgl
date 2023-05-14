@@ -241,8 +241,9 @@ DGL_REGISTER_GLOBAL("sampling.randomwalks._CAPI_CCGSamplingRandomWalk")
       dgl::serialize::CCGData g = args[0];
       IdArray seeds = args[1];
       const int64_t length = args[2];
+      bool loadBalacing = args[3];
 
-      IdArray traces = dgl::tcpdgl::CCGRandomWalk(g->n_nodes, g->gpu_ccg, g->nextDoorData, seeds, length);
+      IdArray traces = dgl::tcpdgl::CCGRandomWalk(g->n_nodes, g->gpu_ccg, g->nextDoorData, seeds, length, loadBalacing);
       *rv = traces;
     });
 

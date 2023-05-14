@@ -31,7 +31,6 @@
 #include "../../../array/cuda/atomic.cuh"
 #include "../../../array/cuda/utils.h"
 #include "../../transform/cuda/cuda_map_edges.cuh"
-#include "../../../runtime/cuda/cuda_common.h"
 #include "../../../array/cuda/dgl_cub.cuh"
 #include "../../../array/cuda/functor.cuh"
 #include "../../../array/cuda/spmm.cuh"
@@ -72,22 +71,44 @@ EdgePos_t *out_idxs;
 int64_t spl_len;
 
 
-__global__ void gpuprint(int *arr, int len = 10)
+__global__ void gpuprint(int *arr, int len = 10, int mi = -1)
 {
   if (threadIdx.x == 0 && blockIdx.x == 0)
   {
     for (int i = 0; i < len; ++i)
-      printf("%d ", arr[i]);
+    if(arr[i]>mi) printf("%d ", arr[i]);
     printf("\n");
   }
 }
 
-__global__ void gpuprint(int64_t *arr, int len = 10)
+__global__ void gpuprint(int64_t *arr, int len = 10, int mi = -1)
 {
   if (threadIdx.x == 0 && blockIdx.x == 0)
   {
     for (int i = 0; i < len; ++i)
-      printf("%ld ", arr[i]);
+    if(arr[i]>mi) printf("%ld ", arr[i]);
+    printf("\n");
+  }
+}
+
+__global__ void gpuck(int64_t *arr_col, int64_t *arr_row, int64_t *arr_idx, int len, int nodes, int edges)
+{
+  if (threadIdx.x == 0 && blockIdx.x == 0)
+  {
+    for (int i = 0; i < len; ++i){
+      if(arr_idx[i]==0) printf("%d: (%ld, %ld, %ld)\n", i, arr_row[i], arr_col[i], arr_idx[i]);
+      else if(arr_col[i]>=nodes || arr_row[i]>=nodes) printf("(%ld, %ld, %ld)\n", arr_row[i], arr_col[i], arr_idx[i]);
+      else if(arr_col[i]<0 || arr_row[i]<0) printf("(%ld, %ld, %ld)\n", arr_row[i], arr_col[i], arr_idx[i]);
+    }
+  }
+}
+
+__global__ void gpucknull(int64_t *arr, int64_t len = 10)
+{
+  if (threadIdx.x == 0 && blockIdx.x == 0)
+  {
+    for (int64_t i = 0; i < len; ++i)
+    if(arr[i] != 20) printf("(%ld %ld)", i, arr[i]);
     printf("\n");
   }
 }
@@ -163,7 +184,7 @@ void allocNextDoorDataOnDevice(NextDoorData &data, const DGLContext &ctx)
   data.dSamplesToTransitMapValues = std::vector<VertexID_t *>(data.devices.size(), nullptr);
   data.dTransitToSampleMapKeys = std::vector<VertexID_t *>(data.devices.size(), nullptr);
   data.dTransitToSampleMapValues = std::vector<VertexID_t *>(data.devices.size(), nullptr);
-  // data.dSampleInsertionPositions = std::vector<VertexID_t *>(data.devices.size(), nullptr);
+  data.dSampleInsertionPositions = std::vector<VertexID_t *>(data.devices.size(), nullptr);
   data.dNeighborhoodSizes = std::vector<EdgePos_t *>(data.devices.size(), nullptr);
   data.dCurandStates = std::vector<curandState *>(data.devices.size(), nullptr);
   data.maxThreadsPerKernel = std::vector<size_t>(data.devices.size(), 0);
@@ -203,16 +224,13 @@ void allocNextDoorDataOnDevice(NextDoorData &data, const DGLContext &ctx)
     // utils::gpu_memset(data.dFinalSamples[deviceIdx], data.INVALID_VERTEX, finalSampleSize * perDeviceNumSamples);
 
     // Samples to Transit Map
-    data.dSamplesToTransitMapKeys[deviceIdx] = static_cast<VertexID_t*>(device->AllocDataSpace(ctx, sizeof(VertexID_t) * perDeviceNumSamples * maxNeighborsToSample, sizeof(VertexID_t), DGLDataType{kDGLInt, 64, 1}));
-    // CHK_CU(cudaMalloc(&data.dSamplesToTransitMapKeys[deviceIdx], sizeof(VertexID_t) * perDeviceNumSamples * maxNeighborsToSample));
-    data.dSamplesToTransitMapValues[deviceIdx] = static_cast<VertexID_t*>(device->AllocDataSpace(ctx, sizeof(VertexID_t) * perDeviceNumSamples * maxNeighborsToSample, sizeof(VertexID_t), DGLDataType{kDGLInt, 64, 1}));
-    // CHK_CU(cudaMalloc(&data.dSamplesToTransitMapValues[deviceIdx], sizeof(VertexID_t) * perDeviceNumSamples * maxNeighborsToSample));
+    std::cout<<"alloc " << perDeviceNumSamples << " * " << subWarpSizeAtStep(maxNeighborsToSample) <<std::endl;
+    data.dSamplesToTransitMapKeys[deviceIdx] = static_cast<VertexID_t*>(device->AllocDataSpace(ctx, sizeof(VertexID_t) * perDeviceNumSamples * subWarpSizeAtStep(maxNeighborsToSample), sizeof(VertexID_t), DGLDataType{kDGLInt, 64, 1}));
+    data.dSamplesToTransitMapValues[deviceIdx] = static_cast<VertexID_t*>(device->AllocDataSpace(ctx, sizeof(VertexID_t) * perDeviceNumSamples * subWarpSizeAtStep(maxNeighborsToSample), sizeof(VertexID_t), DGLDataType{kDGLInt, 64, 1}));
 
     // Transit to Samples Map
-    data.dTransitToSampleMapKeys[deviceIdx] = static_cast<VertexID_t*>(device->AllocDataSpace(ctx, sizeof(VertexID_t) * perDeviceNumSamples * maxNeighborsToSample, sizeof(VertexID_t), DGLDataType{kDGLInt, 64, 1}));
-    // CHK_CU(cudaMalloc(&data.dTransitToSampleMapKeys[deviceIdx], sizeof(VertexID_t) * perDeviceNumSamples * maxNeighborsToSample));
-    data.dTransitToSampleMapValues[deviceIdx] = static_cast<VertexID_t*>(device->AllocDataSpace(ctx, sizeof(VertexID_t) * perDeviceNumSamples * maxNeighborsToSample, sizeof(VertexID_t), DGLDataType{kDGLInt, 64, 1}));
-    // CHK_CU(cudaMalloc(&data.dTransitToSampleMapValues[deviceIdx], sizeof(VertexID_t) * perDeviceNumSamples * maxNeighborsToSample));
+    data.dTransitToSampleMapKeys[deviceIdx] = static_cast<VertexID_t*>(device->AllocDataSpace(ctx, sizeof(VertexID_t) * perDeviceNumSamples * subWarpSizeAtStep(maxNeighborsToSample), sizeof(VertexID_t), DGLDataType{kDGLInt, 64, 1}));
+    data.dTransitToSampleMapValues[deviceIdx] = static_cast<VertexID_t*>(device->AllocDataSpace(ctx, sizeof(VertexID_t) * perDeviceNumSamples * subWarpSizeAtStep(maxNeighborsToSample), sizeof(VertexID_t), DGLDataType{kDGLInt, 64, 1}));
 
     // Same as initial values of samples for first iteration
     //  CHK_CU(cudaMemcpy(data.dTransitToSampleMapKeys[deviceIdx], &data.initialContents[0] + partStartPtr, sizeof(VertexID_t)*partDivisionSize,
@@ -221,8 +239,8 @@ void allocNextDoorDataOnDevice(NextDoorData &data, const DGLContext &ctx)
     //                    sizeof(VertexID_t)*partDivisionSize, cudaMemcpyHostToDevice));
 
     // Insertion positions per transit vertex for each sample
-    // data.dSampleInsertionPositions[deviceIdx] = static_cast<EdgePos_t*>(device->AllocDataSpace(ctx, sizeof(EdgePos_t) * perDeviceNumSamples, sizeof(EdgePos_t), DGLDataType{kDGLInt, 64, 1}));
-    // CHK_CU(cudaMalloc(&data.dSampleInsertionPositions[deviceIdx], sizeof(EdgePos_t) * perDeviceNumSamples));
+    data.dSampleInsertionPositions[deviceIdx] = static_cast<EdgePos_t*>(device->AllocDataSpace(ctx, sizeof(EdgePos_t) * perDeviceNumSamples, sizeof(EdgePos_t), DGLDataType{kDGLInt, 64, 1}));
+    CHK_CU(cudaMalloc(&data.dSampleInsertionPositions[deviceIdx], sizeof(EdgePos_t) * perDeviceNumSamples));
     // CHK_CU(cudaDeviceSynchronize());
   }
 
@@ -342,57 +360,6 @@ void freeDeviceData(NextDoorData &data)
       CHK_CU(cudaFree(data.dOutputSamples[deviceIdx]));
   }
 }
-
-// BCGPartition copyPartitionToGPU(uint64_t n_nodes, int ubl, const std::vector<uint32_t>& g_data, const std::vector<uint32_t>& g_offset, GPUBCGPartition& gpuBCGPartition, EdgePos_t *n_edges) {
-//   //TODO: Store gpuBCGPartition in Constant Memory
-//   auto size_offset = sizeof(Offset_t) * (n_nodes + 1);
-//   CHK_CU(cudaMalloc(&gpuBCGPartition.d_offset, size_offset));
-//   CHK_CU(cudaMalloc(&gpuBCGPartition.d_degoffset, sizeof(EdgePos_t) * (n_nodes + 1)));
-//   Graph_t *d_offset_data;
-//   CHK_CU(cudaMalloc(&d_offset_data, sizeof(Graph_t) * (g_offset.size())));
-//   CHK_CU(cudaMemcpy(d_offset_data, &(g_offset[0]), sizeof(Graph_t) * g_offset.size(), cudaMemcpyHostToDevice));
-
-//   decode_offset<<<min(8192L, n_nodes/256L), 256>>>(d_offset_data, gpuBCGPartition.d_offset, n_nodes, ubl);
-//   void     *d_temp_storage = NULL;
-//   size_t   temp_storage_bytes = 0;
-//   cub::DeviceScan::ExclusiveSum(d_temp_storage, temp_storage_bytes, gpuBCGPartition.d_offset, gpuBCGPartition.d_offset, n_nodes + 1);
-//   CHK_CU(cudaMalloc(&d_temp_storage, temp_storage_bytes));
-//   cub::DeviceScan::ExclusiveSum(d_temp_storage, temp_storage_bytes, gpuBCGPartition.d_offset, gpuBCGPartition.d_offset, n_nodes + 1);
-//   // CHK_CU(cudaFree(d_temp_storage));
-
-//   auto size_graph = sizeof(Graph_t) * g_data.size();
-//   CHK_CU(cudaMalloc(&gpuBCGPartition.d_graph, size_graph));
-//   CHK_CU(cudaMemcpy(gpuBCGPartition.d_graph, &(g_data[0]), size_graph, cudaMemcpyHostToDevice));
-
-//   printf("CCG Transfer %ld B to GPU. (%ldB graph, %ldB offset)\n", size_graph + sizeof(Graph_t) * g_offset.size(), size_graph, sizeof(Graph_t) * g_offset.size());
-
-//   set_deg<<<min(8192L, n_nodes/256L), 256>>>(gpuBCGPartition.d_degoffset, gpuBCGPartition.d_offset, gpuBCGPartition.d_graph, n_nodes);
-//   cub::DeviceScan::ExclusiveSum(d_temp_storage, temp_storage_bytes, gpuBCGPartition.d_degoffset, gpuBCGPartition.d_degoffset, n_nodes + 1);
-//   // d_temp_storage = nullptr;
-//   // CHK_CU(cudaMalloc(&d_temp_storage, temp_storage_bytes));
-//   // cub::DeviceScan::ExclusiveSum(d_temp_storage, temp_storage_bytes, gpuBCGPartition.d_degoffset, gpuBCGPartition.d_degoffset, n_nodes + 1);
-//   CHK_CU(cudaFree(d_temp_storage));
-//   BCGPartition device_bcg_partition = BCGPartition(gpuBCGPartition.d_graph, gpuBCGPartition.d_offset, gpuBCGPartition.d_degoffset, n_nodes);
-//   CHK_CU(cudaMemcpy(n_edges, gpuBCGPartition.d_degoffset + n_nodes, sizeof(EdgePos_t), cudaMemcpyDeviceToHost));
-
-//   return device_bcg_partition;
-// }
-
-// std::vector<GPUBCGPartition> transferToGPUs(NextDoorData& data, uint64_t n_nodes, int ubl, const std::vector<uint32_t>& g_data, const std::vector<uint32_t>& g_offset) {
-//   //Assume that whole graph can be stored in GPU Memory.
-//   //Hence, only one Graph Partition is created.
-//   std::vector<GPUBCGPartition> gpuBCGPartitions;
-//   //Copy full graph to GPU
-//   for (size_t device = 0; device < data.devices.size(); device++) {
-//     GPUBCGPartition gpuBCGPartition;
-//     CHK_CU(cudaSetDevice(data.devices[device]));
-//     BCGPartition deviceBCGPartition = copyPartitionToGPU(n_nodes, ubl, g_data, g_offset, gpuBCGPartition, &data.n_edges);
-//     gpuBCGPartition.d_bcg = (BCGPartition*)bcgPartitionBuff;
-//     CHK_CU(cudaMemcpyToSymbol(bcgPartitionBuff, &deviceBCGPartition, sizeof(BCGPartition)));
-//     gpuBCGPartitions.push_back(gpuBCGPartition);
-//   }
-//   return gpuBCGPartitions;
-// }
 
 __global__ void get_num_edges(EdgePos_t *num_edges) {
   BCGPartition *bcg = (BCGPartition *)&bcgPartitionBuff[0];
@@ -525,16 +492,15 @@ BCGPartition copyPartitionToGPU(uint64_t n_nodes, int ubl, const std::vector<uin
 
 void *InitCurand(const DGLContext &ctx)
 {
-  curandState_t *ret;
+  curandState *ret;
   auto device = runtime::DeviceAPI::Get(ctx);
-
+  cudaStream_t stream = runtime::getCurrentCUDAStream();
   // size_t free, free1, tot;
   // CUDA_CALL(cudaMemGetInfo(&free, &tot));
 
-  ret = static_cast<curandState_t*>(device->AllocDataSpace(ctx, CCGCurandNum * sizeof(curandState_t), alignof(curandState_t), DGLDataType{kBytes, sizeof(curandState_t), 1}));
-  CHK_CU(cudaMalloc(&ret, CCGCurandNum * sizeof(curandState_t)));
+  ret = static_cast<curandState*>(device->AllocDataSpace(ctx, CCGCurandNum * sizeof(curandState), alignof(curandState), DGLDataType{kDGLInt, 32, 1}));
   init_curand_states<<<utils::thread_block_size(CCGCurandNum, 256UL), 256UL>>>(ret, CCGCurandNum);
-  CHK_CU(cudaDeviceSynchronize());
+  device->StreamSync(ctx, stream);
 
   // CUDA_CALL(cudaMemGetInfo(&free1, &tot));
   // std::cout << "[PF] stat InitCurand "<< (free-free1)/1024/1024 << std::endl;
@@ -589,7 +555,7 @@ __global__ void invalidVertexStartPos(int step, VertexID_t *transitToSamplesKeys
   }
 }
 
-template <typename CCGApp, int TB_THREADS, TransitKernelTypes kTy, bool WRITE_KERNELTYPES>
+template <int TB_THREADS, TransitKernelTypes kTy, bool WRITE_KERNELTYPES>
 __global__ void partitionTransitsInKernels(int step, EdgePos_t *uniqueTransits, EdgePos_t *uniqueTransitCounts,
                                             EdgePos_t *transitPositions,
                                             EdgePos_t uniqueTransitCountsNum, VertexID_t invalidVertex,
@@ -628,6 +594,7 @@ __global__ void partitionTransitsInKernels(int step, EdgePos_t *uniqueTransits, 
   if (useGridKernel && trCount * subWarpSize >= LoadBalancing::LoadBalancingThreshold::GridLevel)
   {
     kernelType = TransitKernelTypes::GridKernel;
+    printf("%d GridKernel transit %ld\n", threadId, transit);
   }
   else if (useThreadBlockKernel && trCount * subWarpSize >= LoadBalancing::LoadBalancingThreshold::BlockLevel)
   {
@@ -830,7 +797,7 @@ __global__ void samplingKernel(const int step, const size_t threadsExecuted, con
                                 EdgePos_t *sampleNeighborhoodSizes, EdgePos_t *sampleNeighborhoodPos,
                                 VertexID_t *collectiveNeighborhoodCSRRows,
                                 EdgePos_t *collectiveNeighborhoodCSRCols,
-                                curandState *randStates, int tot_step, int64_t* fanouts,
+                                curandState *randStates, int tot_step, int64_t *fanouts,
                                 VertexID_t *out_rows, VertexID_t *out_cols, EdgePos_t *out_idxs,
                                 VertexID_t *out_trace, int64_t trace_length)
 {
@@ -843,19 +810,19 @@ __global__ void samplingKernel(const int step, const size_t threadsExecuted, con
   curandState *randState = &randStates[threadId];
 
   threadId += threadsExecuted;
-  int stepSize;
-  if (tpMode == NextFuncExecution)
-  {
-    stepSize = (int)fanouts[step];
-  }
-  else if (tpMode == CollectiveNeighborhoodComputation)
-  {
-    stepSize = CollNeighStepSize;
-  }
-  else if (tpMode == CollectiveNeighborhoodSize)
-  {
-    stepSize = 1;
-  }
+  // int stepSize;
+  // if (tpMode == NextFuncExecution)
+  // {
+  //   stepSize = (int)fanouts[step];
+  // }
+  // else if (tpMode == CollectiveNeighborhoodComputation)
+  // {
+  //   stepSize = CollNeighStepSize;
+  // }
+  // else if (tpMode == CollectiveNeighborhoodSize)
+  // {
+  //   stepSize = 1;
+  // }
   EdgePos_t transitIdx = threadId / fanouts[step];
   EdgePos_t transitNeighborIdx = threadId % fanouts[step];
   EdgePos_t numTransits = fanouts[step];
@@ -871,7 +838,7 @@ __global__ void samplingKernel(const int step, const size_t threadsExecuted, con
 
   BCGPartition *bcg = (BCGPartition *)&bcgPartitionBuff[0];
 
-  assert(transit < invalidVertex);
+  // assert(transit < invalidVertex);
   if (transit != invalidVertex)
   {
     BCGVertex bcgv(transit, bcg->graph, bcg->offset[transit]);
@@ -895,7 +862,7 @@ __global__ void samplingKernel(const int step, const size_t threadsExecuted, con
     }
   }
 
-  __syncwarp();
+  // __syncwarp();
   if (tpMode == NextFuncExecution)
   {
     EdgePos_t insertionPos = 0;
@@ -939,7 +906,9 @@ __global__ void identityKernel(const int step, const VertexID_t deviceFirstSampl
                                 const size_t transitToSamplesSize, CCGSample *samples, const size_t NumSamples,
                                 VertexID_t *samplesToTransitKeys, VertexID_t *samplesToTransitValues,
                                 VertexID_t *finalSamples, const size_t finalSampleSize, EdgePos_t *sampleInsertionPositions,
-                                curandState *randStates, const int *kernelTypeForTransit, int numTransits, int tot_step, const int *fanouts, VertexID_t *out_rows, VertexID_t *out_cols, EdgePos_t *out_idxs)
+                                curandState *randStates, const int *kernelTypeForTransit, int64_t numTransits, int64_t *fanouts,
+                                int tot_step, VertexID_t *out_rows, VertexID_t *out_cols, EdgePos_t *out_idxs,
+                                VertexID_t *out_trace, int64_t trace_length)
 {
   // if (threadIdx.x == 0 && blockIdx.x == 0) printf("IK %d\n", step);
 
@@ -1000,6 +969,7 @@ __global__ void identityKernel(const int step, const VertexID_t deviceFirstSampl
         (useSubWarpKernel && kernelTy == TransitKernelTypes::SubWarpKernel && numTransits > 1) ||
         (useThreadBlockKernel && kernelTy == TransitKernelTypes::ThreadBlockKernel && numTransits > 1))
     {
+      // printf("diff kernel: %ld, transit: %ld, pos: %ld, kernelTy: %d\n", threadId, transit, transitIdx * fanouts[step] + transitNeighborIdx, kernelTy);
       continueExecution = false;
     }
 
@@ -1028,12 +998,14 @@ __global__ void identityKernel(const int step, const VertexID_t deviceFirstSampl
         neighbor_pos += bcg->degoffset[transit];
       }
     }
+    // printf("Thread %d: %ld %ld %ld\n", threadId, transit, neighbor_pos, neighbor);
     __syncwarp();
 
     if (continueExecution)
     {
       if (step != tot_step - 1)
       {
+        EdgePos_t pos = transitIdx * fanouts[step] + transitNeighborIdx;
         // No need to store at last step
         if (HAS_EXPLICIT_TRANSITS)
         {
@@ -1042,42 +1014,46 @@ __global__ void identityKernel(const int step, const VertexID_t deviceFirstSampl
         }
         else
         {
-          samplesToTransitValues[threadId] = neighbor != -1 ? neighbor : invalidVertex;
-          ;
+          // samplesToTransitValues[threadId] = neighbor != -1 ? neighbor : invalidVertex;
+          samplesToTransitValues[pos] = neighbor != -1 ? neighbor : invalidVertex;
         }
-        samplesToTransitKeys[threadId] = sampleIdx;
+        samplesToTransitKeys[pos] = sampleIdx;
       }
     }
 
     __syncwarp();
-    // FIXME: in deepwalk if there is an invalid vertex at step k, it will not store the
-    // transits of step k -1 due to coalescing the stores.
-    EdgePos_t finalSampleSizeTillPreviousStep = 0;
-    EdgePos_t neighborsToSampleAtStep = 1;
+
+    
     EdgePos_t insertionPos = 0;
-    if (step == 0)
+    if (CCGApp().samplingType() == SamplingType::NeighborSampling)
     {
-      insertionPos = transitNeighborIdx;
-    }
-    else
-    {
-      for (int _s = 0; _s < step; _s++)
+      EdgePos_t finalSampleSizeTillPreviousStep = 0;
+      EdgePos_t neighborsToSampleAtStep = 1;
+      // FIXME: in deepwalk if there is an invalid vertex at step k, it will not store the
+      // transits of step k -1 due to coalescing the stores.
+      if (step == 0)
       {
-        neighborsToSampleAtStep *= fanouts[_s];
-        finalSampleSizeTillPreviousStep += neighborsToSampleAtStep;
+        insertionPos = transitNeighborIdx;
       }
-      EdgePos_t insertionStartPosForTransit = 0;
-
-      if (threadIdx.x % subWarpSize == 0)
+      else
       {
-        insertionStartPosForTransit = utils::atomicAdd(&sampleInsertionPositions[sampleIdx - deviceFirstSample], fanouts[step]);
-      }
-      insertionStartPosForTransit = __shfl_sync(FULL_WARP_MASK, insertionStartPosForTransit, 0, subWarpSize);
-      // insertionPos = finalSampleSizeTillPreviousStep + insertionStartPosForTransit + transitNeighborIdx;
-      insertionPos = insertionStartPosForTransit + transitNeighborIdx;
-    }
+        for (int _s = 0; _s < step; _s++)
+        {
+          neighborsToSampleAtStep *= fanouts[_s];
+          finalSampleSizeTillPreviousStep += neighborsToSampleAtStep;
+        }
+        EdgePos_t insertionStartPosForTransit = 0;
 
-    __syncwarp();
+        if (threadIdx.x % subWarpSize == 0)
+        {
+          insertionStartPosForTransit = utils::atomicAdd(&sampleInsertionPositions[sampleIdx - deviceFirstSample], fanouts[step]);
+        }
+        insertionStartPosForTransit = __shfl_sync(FULL_WARP_MASK, insertionStartPosForTransit, 0, subWarpSize);
+        // insertionPos = finalSampleSizeTillPreviousStep + insertionStartPosForTransit + transitNeighborIdx;
+        insertionPos = insertionStartPosForTransit + transitNeighborIdx;
+      }
+      __syncwarp();
+    }
 
     if (continueExecution)
     {
@@ -1085,10 +1061,37 @@ __global__ void identityKernel(const int step, const VertexID_t deviceFirstSampl
       {
         // printf("%ld -(%ld)-> %ld\n", transit, neighbor, neighbor_pos);
         // printf("Pos %ld\n", (sampleIdx - deviceFirstSample) * neighborsToSampleAtStep * fanouts[step] + insertionPos);
-        out_rows[(sampleIdx - deviceFirstSample) * neighborsToSampleAtStep * fanouts[step] + insertionPos] = transit;
-        out_cols[(sampleIdx - deviceFirstSample) * neighborsToSampleAtStep * fanouts[step] + insertionPos] = neighbor;
-        out_idxs[(sampleIdx - deviceFirstSample) * neighborsToSampleAtStep * fanouts[step] + insertionPos] = neighbor_pos;
+        if (CCGApp().samplingType() == SamplingType::NeighborSampling)
+        {
+          insertionPos = transitIdx * fanouts[step] + transitNeighborIdx;
+          // insertionPos = (sampleIdx - deviceFirstSample) * neighborsToSampleAtStep * fanouts[step] + insertionPos;
+          // printf("Thread %d: sample %ld transit %ld out[%ld] = %ld\n", threadId, sampleIdx, transitIdx, insertionPos, neighbor);
+          // assert(transit!=-1 && transit != invalidVertex);
+          // assert(neighbor!=-1 && neighbor != invalidVertex);
+          // assert(transit != 0 || neighbor != 0);
+          out_rows[insertionPos] = neighbor != -1 ? transit : invalidVertex;
+          out_cols[insertionPos] = neighbor != -1 ? neighbor : invalidVertex;
+          out_idxs[insertionPos] = neighbor != -1 ? neighbor_pos : -1;
+        }
+        else if (CCGApp().samplingType() == SamplingType::RandomWalkSampling)
+        {
+          insertionPos = (sampleIdx - deviceFirstSample) * trace_length + step + 1;
+          out_trace[insertionPos] = neighbor != -1 ? neighbor : invalidVertex;
+        }
       }
+    }
+  }
+
+  //Write back the updated curand states
+  if (COALESCE_CURAND_LOAD)
+  {
+    const int intsInRandState = sizeof(curandState) / sizeof(int);
+    int* shStateBuffAsInts = (int*)&shMemCuRand[0];
+    int* randStatesAsInts = (int*)randStates;
+  
+    for (int i = threadIdx.x; i < intsInRandState * blockDim.x; i += blockDim.x)
+    {
+      randStatesAsInts[i + blockDim.x*blockIdx.x] = shStateBuffAsInts[i];
     }
   }
 }
@@ -1102,7 +1105,9 @@ __global__ void threadBlockKernel(const int step, const VertexID_t deviceFirstSa
                                   VertexID_t *finalSamples, const size_t finalSampleSize, EdgePos_t *sampleInsertionPositions,
                                   curandState *randStates, const int *kernelTypeForTransit, const VertexID_t *threadBlockKernelPositions,
                                   const EdgePos_t threadBlockKernelPositionsNum, int totalThreadBlocks,
-                                  int numTransitsAtStepPerSample, int finalSampleSizeTillPreviousStep, int *fanouts, int tot_step, VertexID_t *out_rows, VertexID_t *out_cols, EdgePos_t *out_idxs)
+                                  int numTransitsAtStepPerSample, int finalSampleSizeTillPreviousStep, int64_t *fanouts,
+                                  int tot_step, VertexID_t *out_rows, VertexID_t *out_cols, EdgePos_t *out_idxs,
+                                  VertexID_t *out_trace, int64_t trace_length)
 {
 // if (threadIdx.x == 0 && blockIdx.x == 0) printf("TBK %d\n", step);
 #define EDGE_CACHE_SIZE (CACHE_EDGES ? CACHE_SIZE : 0)
@@ -1122,10 +1127,11 @@ __global__ void threadBlockKernel(const int step, const VertexID_t deviceFirstSa
     unsigned char shMemAlloc[sizeof(curandState) * THREADS];
   };
   __shared__ unionShMem shMem;
-
+  
+  // clock_t start = clock();
   // CSR::Edge* edgesInShMem = CACHE_EDGES ? (CSR::Edge*)(&shMem.edgeAndWeightCache[0] + EDGE_CACHE_SIZE*(threadIdx.x/LoadBalancing::LoadBalancingThreshold::BlockLevel)) : nullptr;
   // float* edgeWeightsInShMem = CACHE_WEIGHTS ? (float*)&shMem.edgeAndWeightCache[EDGE_CACHE_SIZE] : nullptr;
-  Graph_t *graphInShMem = CACHE_EDGES ? shMem.graphCache + EDGE_CACHE_SIZE * (threadIdx.x / LoadBalancing::LoadBalancingThreshold::BlockLevel) : nullptr;
+  // Graph_t *graphInShMem = CACHE_EDGES ? shMem.graphCache + EDGE_CACHE_SIZE * (threadIdx.x / LoadBalancing::LoadBalancingThreshold::BlockLevel) : nullptr;
 
   const int stepSize = fanouts[step];
   curandState *curandSrcPtr;
@@ -1154,8 +1160,13 @@ __global__ void threadBlockKernel(const int step, const VertexID_t deviceFirstSa
 
   BCGPartition *bcg = (BCGPartition *)&bcgPartitionBuff[0];
 
+  // clock_t init_sh = clock();
+  // if(!threadIdx.x && !blockIdx.x) printf("init_sh %lf\n", ((double)init_sh - start)/CLOCKS_PER_SEC);
+  // int cnt=0;
   for (int fullBlockIdx = blockIdx.x; fullBlockIdx < totalThreadBlocks; fullBlockIdx += gridDim.x)
   {
+    // cnt++;
+    // if(!blockIdx.x && !threadIdx.x) printf("%d next block: %d\n", cnt, fullBlockIdx);
     EdgePos_t transitIdx = 0;
     static_assert(NUM_THREAD_GROUPS * TRANSITS_PER_THREAD <= THREADS);
     int fullWarpIdx = (threadIdx.x + fullBlockIdx * blockDim.x) / LoadBalancing::LoadBalancingThreshold::BlockLevel;
@@ -1182,6 +1193,7 @@ __global__ void threadBlockKernel(const int step, const VertexID_t deviceFirstSa
       // Coalesce loads of transits per sub-warp by loading transits for all sub-warps in one warp.
       // FIXME: Fix this when SUB_WARP_SIZE < 32
       int subWarpIdx = threadIdx.x / TRANSITS_PER_THREAD;
+      // the I-th transit of current thread
       int transitI = threadIdx.x % TRANSITS_PER_THREAD;
       transitIdx = shMem.mapStartPos[subWarpIdx][transitI];
       // TODO: Specialize this for subWarpSize = 1.
@@ -1207,6 +1219,8 @@ __global__ void threadBlockKernel(const int step, const VertexID_t deviceFirstSa
     }
     __syncthreads();
 
+    // clock_t load_transit = clock();
+    // if(!threadIdx.x && !blockIdx.x) printf("load_transit %lf\n", ((double)load_transit - init_sh)/CLOCKS_PER_SEC);
     for (int transitI = 0; transitI < TRANSITS_PER_THREAD; transitI++)
     {
       int threadBlockWarpIdx = threadIdx.x / subWarpSize;
@@ -1237,39 +1251,46 @@ __global__ void threadBlockKernel(const int step, const VertexID_t deviceFirstSa
 
       bool continueExecution = true;
 
-      if (subWarpSize == 32)
+      if (subWarpSize == 32) // true
       {
         assert(transit == shMemTransitVertex);
         // A thread will run next only when it's transit is same as transit of the threadblock.
-        transitIdx = shMem.mapStartPos[threadBlockWarpIdx][transitI] + threadIdx.x / subWarpSize; // threadId/stepSize(step);
+        // transitIdx = shMem.mapStartPos[threadBlockWarpIdx][transitI] + threadIdx.x / subWarpSize; // threadId/stepSize(step);
+        transitIdx = shMem.mapStartPos[threadBlockWarpIdx][transitI];
+        // assert(transitIdx < transitToSamplesSize);
+        // if(transitIdx >= transitToSamplesSize) printf("%d tranist id %ld >= %ld %d\n", threadIdx.x, transitIdx, transitToSamplesSize, threadIdx.x / subWarpSize);
         VertexID_t transitNeighborIdx = threadIdx.x % subWarpSize;
         VertexID_t sampleIdx = shMem.subWarpSampleIdx[threadBlockWarpIdx][transitI][0];
 
-        continueExecution = (transitNeighborIdx < stepSize);
+        continueExecution = (transitNeighborIdx < stepSize) && (transitIdx != -1);
 
         VertexID_t neighbor = invalidVertex;
         EdgePos_t neighbor_pos = 0;
         if (numEdgesInShMem > 0 && continueExecution)
         {
           neighbor = CCGApp().next(step, &transit, sampleIdx, numEdgesInShMem, transitNeighborIdx, &localRandState, &bcgv, neighbor_pos);
-          // neighbor = 1;
           neighbor_pos += bcg->degoffset[transit];
         }
 
+        // clock_t done_next = clock();
+        // if(!threadIdx.x && !blockIdx.x) printf("done_next %lf\n", ((double)done_next - load_transit)/CLOCKS_PER_SEC);
         if (continueExecution)
         {
+          int pos = transitIdx * fanouts[step] + transitNeighborIdx;
           if (step != tot_step - 1)
           {
             // No need to store at last step
-            samplesToTransitKeys[transitIdx] = sampleIdx; // TODO: Update this for khop to transitIdx + transitNeighborIdx
+            samplesToTransitKeys[pos] = sampleIdx; // TODO: Update this for khop to transitIdx + transitNeighborIdx
             if (CCGApp().hasExplicitTransits())
             {
               VertexID_t newTransit = CCGApp().stepTransits(step, sampleIdx, samples[sampleIdx - deviceFirstSample], transitIdx, &localRandState);
-              samplesToTransitValues[transitIdx] = newTransit != -1 ? newTransit : invalidVertex;
+              // samplesToTransitValues[transitIdx] = newTransit != -1 ? newTransit : invalidVertex;
+              samplesToTransitValues[pos] = newTransit != -1 ? newTransit : invalidVertex;
             }
             else
             {
-              samplesToTransitValues[transitIdx] = neighbor != -1 ? neighbor : invalidVertex;
+              // samplesToTransitValues[transitIdx] = neighbor != -1 ? neighbor : invalidVertex;
+              samplesToTransitValues[pos] = neighbor != -1 ? neighbor : invalidVertex;
             }
           }
         }
@@ -1289,30 +1310,50 @@ __global__ void threadBlockKernel(const int step, const VertexID_t deviceFirstSa
           insertionStartPosForTransit = __shfl_sync(FULL_WARP_MASK, insertionStartPosForTransit, 0, subWarpSize);
           // insertionPos = finalSampleSizeTillPreviousStep + insertionStartPosForTransit + transitNeighborIdx;
           insertionPos = insertionStartPosForTransit + transitNeighborIdx;
-          // printf("-- %ld %ld %ld\n", finalSampleSizeTillPreviousStep,  insertionStartPosForTransit, transitNeighborIdx);
+          // printf("%ld -(%ld)-> %ld -- %ld %ld\n", transit, neighbor, neighbor_pos, insertionStartPosForTransit, transitNeighborIdx);
         }
 
         if (continueExecution)
           assert(insertionPos < finalSampleSize);
 
-        if (isValidSampledVertex(neighbor, invalidVertex))
+        // clock_t done_insert = clock();
+        // if(!threadIdx.x && !blockIdx.x) printf("done_next %lf\n", ((double)done_insert - done_next)/CLOCKS_PER_SEC);
+
+        if (continueExecution && isValidSampledVertex(neighbor, invalidVertex))
         {
-          size_t neighborsToSampleAtStep = 1;
-          for (int _s = 0; _s < step; _s++)
+          if (CCGApp().samplingType() == SamplingType::NeighborSampling)
           {
-            neighborsToSampleAtStep *= fanouts[_s];
+            // size_t neighborsToSampleAtStep = 1;
+            // for (int _s = 0; _s < step; _s++)
+            // {
+            //   neighborsToSampleAtStep *= fanouts[_s];
+            // }
+            // printf("%ld -(%ld)-> %ld\n", transit, neighbor, neighbor_pos);
+            // if ((sampleIdx - deviceFirstSample) * neighborsToSampleAtStep * stepSize + insertionPos >= 20 * 5 * 20)
+            // printf("%ld %d Pos %ld\n", insertionPos, transitNeighborIdx, (sampleIdx - deviceFirstSample) * neighborsToSampleAtStep * stepSize + insertionPos);
+            // printf("P=%ld  ", (sampleIdx - deviceFirstSample) * neighborsToSampleAtStep * stepSize + insertionPos);
+            // printf("P=%ldx%ld B=%do%d ", sampleIdx, insertionPos, blockIdx.x, threadIdx.x);
+            // insertionPos = (sampleIdx - deviceFirstSample) * neighborsToSampleAtStep * stepSize + insertionPos;
+            insertionPos = transitIdx * fanouts[step] + transitNeighborIdx;
+            // assert(insertionPos < transitToSamplesSize);
+            if(insertionPos >= transitToSamplesSize) printf("sample %ld transit(id: %ld) %ld out[%ld] = %ld\n", sampleIdx, transitIdx, transit, insertionPos, neighbor);
+            assert(neighbor != -1);
+            assert(transit!=-1);
+            out_rows[insertionPos] = transit;
+            out_cols[insertionPos] = neighbor;
+            out_idxs[insertionPos] = neighbor_pos;
           }
-          // printf("%ld -(%ld)-> %ld\n", transit, neighbor, neighbor_pos);
-          // if ((sampleIdx - deviceFirstSample) * neighborsToSampleAtStep * stepSize + insertionPos >= 20 * 5 * 20)
-          // printf("%ld %d Pos %ld\n", insertionPos, transitNeighborIdx, (sampleIdx - deviceFirstSample) * neighborsToSampleAtStep * stepSize + insertionPos);
-          // printf("P=%ld  ", (sampleIdx - deviceFirstSample) * neighborsToSampleAtStep * stepSize + insertionPos);
-          // printf("P=%ldx%ld B=%do%d ", sampleIdx, insertionPos, blockIdx.x, threadIdx.x);
-          out_rows[(sampleIdx - deviceFirstSample) * neighborsToSampleAtStep * stepSize + insertionPos] = transit;
-          out_cols[(sampleIdx - deviceFirstSample) * neighborsToSampleAtStep * stepSize + insertionPos] = neighbor;
-          out_idxs[(sampleIdx - deviceFirstSample) * neighborsToSampleAtStep * stepSize + insertionPos] = neighbor_pos;
+          else if (CCGApp().samplingType() == SamplingType::RandomWalkSampling)
+          {
+            insertionPos = (sampleIdx - deviceFirstSample) * trace_length + step + 1;
+            out_trace[insertionPos] = neighbor;
+          }
         }
+        // clock_t done_out = clock();
+        // if(!threadIdx.x && !blockIdx.x) printf("done_out %lf\n", ((double)done_out - done_insert)/CLOCKS_PER_SEC);
       }
     }
+    
   }
 }
 
@@ -1326,7 +1367,8 @@ __global__ void gridKernel(const int step, const VertexID_t deviceFirstSample,
                             VertexID_t *finalSamples, const size_t finalSampleSize, EdgePos_t *sampleInsertionPositions,
                             curandState *randStates, const int *kernelTypeForTransit, const VertexID_t *gridKernelTBPositions,
                             const EdgePos_t gridKernelTBPositionsNum, int totalThreadBlocks, int numTransitsPerStepForSample,
-                            int finalSampleSizeTillPreviousStep, int *fanouts, int tot_step, VertexID_t *out_rows, VertexID_t *out_cols, EdgePos_t *out_idxs)
+                            int finalSampleSizeTillPreviousStep, int64_t *fanouts, int tot_step,
+                            VertexID_t *out_rows, VertexID_t *out_cols, EdgePos_t *out_idxs, VertexID_t *out_trace, int64_t trace_length) 
 {
   // if (threadIdx.x == 0 && blockIdx.x == 0) printf("GK %d\n", step);
 
@@ -1357,7 +1399,7 @@ __global__ void gridKernel(const int step, const VertexID_t deviceFirstSample,
 
   // CSR::Edge* edgesInShMem = CACHE_EDGES ? (CSR::Edge*)&shMem.edgeAndWeightCache[0] : nullptr;
   // float* edgeWeightsInShMem = CACHE_WEIGHTS ? (float*)&shMem.edgeAndWeightCache[EDGE_CACHE_SIZE] : nullptr;
-  Graph_t *graphInShMem = CACHE_EDGES ? shMem.graphCache : nullptr;
+  // Graph_t *graphInShMem = CACHE_EDGES ? shMem.graphCache : nullptr;
   // Graph_t* graphInShMem = CACHE_EDGES ? shMem.graphCache + EDGE_CACHE_SIZE * (threadIdx.x / LoadBalancing::LoadBalancingThreshold::BlockLevel) : nullptr;
 
   int threadId = threadIdx.x + blockDim.x * blockIdx.x;
@@ -1512,10 +1554,12 @@ __global__ void gridKernel(const int step, const VertexID_t deviceFirstSample,
 
         if (continueExecution)
         {
+          EdgePos_t pos = transitIdx * fanouts[step] + transitNeighborIdx;
           if (step != tot_step - 1)
           {
             // No need to store at last step
-            samplesToTransitKeys[transitIdx] = sampleIdx; // TODO: Update this for khop to transitIdx + transitNeighborIdx
+            // samplesToTransitKeys[transitIdx] = sampleIdx; // TODO: Update this for khop to transitIdx + transitNeighborIdx
+            samplesToTransitKeys[pos] = sampleIdx;
             if (CCGApp().hasExplicitTransits())
             {
               VertexID_t newTransit = CCGApp().stepTransits(step, sampleIdx, samples[sampleIdx - deviceFirstSample], transitIdx, &localRandState);
@@ -1523,7 +1567,8 @@ __global__ void gridKernel(const int step, const VertexID_t deviceFirstSample,
             }
             else
             {
-              samplesToTransitValues[transitIdx] = neighbor != -1 ? neighbor : invalidVertex;
+              // samplesToTransitValues[transitIdx] = neighbor != -1 ? neighbor : invalidVertex;
+              samplesToTransitValues[pos] = neighbor != -1 ? neighbor : invalidVertex;
             }
           }
         }
@@ -1557,16 +1602,26 @@ __global__ void gridKernel(const int step, const VertexID_t deviceFirstSample,
 
         if (isValidSampledVertex(neighbor, invalidVertex))
         {
-          size_t neighborsToSampleAtStep = 1;
-          for (int _s = 0; _s < step; _s++)
+          if (CCGApp().samplingType() == SamplingType::NeighborSampling)
           {
-            neighborsToSampleAtStep *= fanouts[_s];
+            // size_t neighborsToSampleAtStep = 1;
+            // for (int _s = 0; _s < step; _s++)
+            // {
+            //   neighborsToSampleAtStep *= fanouts[_s];
+            // }
+            // printf("%ld -(%ld)-> %ld\n", transit, neighbor, neighbor_pos);
+            // printf("gkPos %ld\n", (sampleIdx - deviceFirstSample) * neighborsToSampleAtStep * stepSize + insertionPos);
+            insertionPos = transitIdx * fanouts[step] + transitNeighborIdx;
+            // insertionPos = (sampleIdx - deviceFirstSample) * neighborsToSampleAtStep * stepSize + insertionPos
+            out_rows[insertionPos] = neighbor != -1 ? transit : invalidVertex;
+            out_cols[insertionPos] = neighbor != -1 ? neighbor : invalidVertex;
+            out_idxs[insertionPos] = neighbor != -1 ? neighbor_pos : -1;
           }
-          // printf("%ld -(%ld)-> %ld\n", transit, neighbor, neighbor_pos);
-          // printf("gkPos %ld\n", (sampleIdx - deviceFirstSample) * neighborsToSampleAtStep * stepSize + insertionPos);
-          out_rows[(sampleIdx - deviceFirstSample) * neighborsToSampleAtStep * stepSize + insertionPos] = transit;
-          out_cols[(sampleIdx - deviceFirstSample) * neighborsToSampleAtStep * stepSize + insertionPos] = neighbor;
-          out_idxs[(sampleIdx - deviceFirstSample) * neighborsToSampleAtStep * stepSize + insertionPos] = neighbor_pos;
+          else if (CCGApp().samplingType() == SamplingType::RandomWalkSampling)
+          {
+            insertionPos = (sampleIdx - deviceFirstSample) * trace_length + step + 1;
+            out_trace[insertionPos] = neighbor != -1 ? neighbor : invalidVertex;
+          }
         }
         // }
         // TODO: We do not need atomic instead store indices of transit in another array,
@@ -1583,7 +1638,7 @@ __global__ void setFristNode(VertexID_t* trace, VertexID_t* seeds, int length) {
 }
 
 template <typename CCGApp>
-void doTransitParallelSampling(NextDoorData &nextDoorData, const DGLContext &ctx)
+void doTransitParallelSampling(NextDoorData &nextDoorData, const DGLContext &ctx, bool enableLoadBalancing = true)
 {
   auto device = runtime::DeviceAPI::Get(ctx);
   cudaStream_t stream = runtime::getCurrentCUDAStream();
@@ -1596,31 +1651,6 @@ void doTransitParallelSampling(NextDoorData &nextDoorData, const DGLContext &ctx
   d_fanouts = static_cast<int64_t *>(device->AllocWorkspace(ctx, sizeof(int64_t) * fanouts.size()));
   device->CopyDataFromTo(fanouts.data(), 0, d_fanouts, 0, sizeof(int64_t) * fanouts.size(), DGLContext{kDGLCPU, 0}, ctx, DGLDataType{kDGLInt, 64, 1});
   size_t finalSampleSize = CCGApp().getFinalSampleSize();
-  // for(size_t deviceIdx = 0; deviceIdx < nextDoorData.devices.size(); deviceIdx++) {
-  //   auto device = nextDoorData.devices[deviceIdx];
-  //   CHK_CU(cudaSetDevice(device));
-  //   const size_t perDeviceNumSamples = PartDivisionSize(nextDoorData.sampleNum, deviceIdx, numDevices);
-  //   const size_t deviceSampleStartPtr = PartStartPointer(nextDoorData.sampleNum, deviceIdx, numDevices);
-  //   if (tot_step == 1) {
-  //     CHK_CU(cudaMemcpy(nextDoorData.dSamplesToTransitMapValues[deviceIdx],
-  //                       &nextDoorData.initialContents[0] + CCGApp().initialSampleSize()*deviceSampleStartPtr,
-  //                       sizeof(VertexID_t)*CCGApp().initialSampleSize()*perDeviceNumSamples,
-  //                       cudaMemcpyHostToDevice));
-  //     CHK_CU(cudaMemcpy(nextDoorData.dSamplesToTransitMapKeys[deviceIdx],
-  //                       &nextDoorData.initialTransitToSampleValues[0] + CCGApp().initialSampleSize()*deviceSampleStartPtr,
-  //                       sizeof(VertexID_t)*CCGApp().initialSampleSize()*perDeviceNumSamples,
-  //                       cudaMemcpyHostToDevice));
-  //   } else {
-  //     CHK_CU(cudaMemcpy(nextDoorData.dTransitToSampleMapKeys[deviceIdx],
-  //                       &nextDoorData.initialContents[0] + CCGApp().initialSampleSize()*deviceSampleStartPtr,
-  //                       sizeof(VertexID_t)*CCGApp().initialSampleSize()*perDeviceNumSamples,
-  //                       cudaMemcpyHostToDevice));
-  //     CHK_CU(cudaMemcpy(nextDoorData.dTransitToSampleMapValues[deviceIdx],
-  //                       &nextDoorData.initialTransitToSampleValues[0] + CCGApp().initialSampleSize()*deviceSampleStartPtr,
-  //                       sizeof(VertexID_t)*CCGApp().initialSampleSize()*perDeviceNumSamples,
-  //                       cudaMemcpyHostToDevice));
-  //   }
-  // }
 
   std::vector<VertexID_t *> d_temp_storage = std::vector<VertexID_t *>(nextDoorData.devices.size());
   std::vector<size_t> temp_storage_bytes = std::vector<size_t>(nextDoorData.devices.size());
@@ -1629,28 +1659,33 @@ void doTransitParallelSampling(NextDoorData &nextDoorData, const DGLContext &ctx
   std::vector<size_t> unique_temp_storage_bytes = std::vector<size_t>(nextDoorData.devices.size());
   
 
-  // std::vector<VertexID_t *> dUniqueTransits = std::vector<VertexID_t *>(nextDoorData.devices.size());
-  // std::vector<VertexID_t *> dUniqueTransitsCounts = std::vector<VertexID_t *>(nextDoorData.devices.size());
-  // std::vector<EdgePos_t *> dUniqueTransitsNumRuns = std::vector<EdgePos_t *>(nextDoorData.devices.size());
-  // std::vector<EdgePos_t *> dTransitPositions = std::vector<EdgePos_t *>(nextDoorData.devices.size());
-  // std::vector<EdgePos_t *> uniqueTransitNumRuns = std::vector<EdgePos_t *>(nextDoorData.devices.size());
+  // unique transits in dTransitToSampleMapKeys
+  std::vector<VertexID_t *> dUniqueTransits = std::vector<VertexID_t *>(nextDoorData.devices.size());
+  // counts of unique transits in dTransitToSampleMapKeys
+  std::vector<VertexID_t *> dUniqueTransitsCounts = std::vector<VertexID_t *>(nextDoorData.devices.size());
+  // number of unique tranists in dTransitToSampleMapKeys
+  std::vector<EdgePos_t *> uniqueTransitNumRuns = std::vector<EdgePos_t *>(nextDoorData.devices.size());
+  // number of unique tranists in dTransitToSampleMapKeys
+  std::vector<EdgePos_t *> dUniqueTransitsNumRuns = std::vector<EdgePos_t *>(nextDoorData.devices.size());
+  // start postion of unique transits in dTransitToSampleMapKeys
+  std::vector<EdgePos_t *> dTransitPositions = std::vector<EdgePos_t *>(nextDoorData.devices.size());
 
-  // /**Pointers for each kernel type**/
-  // std::vector<EdgePos_t *> gridKernelTransitsNum = std::vector<EdgePos_t *>(nextDoorData.devices.size());
-  // std::vector<EdgePos_t *> dGridKernelTransitsNum = std::vector<EdgePos_t *>(nextDoorData.devices.size());
-  // std::vector<VertexID_t *> dGridKernelTransits = std::vector<VertexID_t *>(nextDoorData.devices.size());
+  /**Pointers for each kernel type**/
+  std::vector<EdgePos_t *> gridKernelTransitsNum = std::vector<EdgePos_t *>(nextDoorData.devices.size());
+  std::vector<EdgePos_t *> dGridKernelTransitsNum = std::vector<EdgePos_t *>(nextDoorData.devices.size());
+  std::vector<VertexID_t *> dGridKernelTransits = std::vector<VertexID_t *>(nextDoorData.devices.size());
 
-  // std::vector<EdgePos_t *> threadBlockKernelTransitsNum = std::vector<EdgePos_t *>(nextDoorData.devices.size());
-  // std::vector<EdgePos_t *> dThreadBlockKernelTransitsNum = std::vector<EdgePos_t *>(nextDoorData.devices.size());
-  // std::vector<VertexID_t *> dThreadBlockKernelTransits = std::vector<VertexID_t *>(nextDoorData.devices.size());
+  std::vector<EdgePos_t *> threadBlockKernelTransitsNum = std::vector<EdgePos_t *>(nextDoorData.devices.size());
+  std::vector<EdgePos_t *> dThreadBlockKernelTransitsNum = std::vector<EdgePos_t *>(nextDoorData.devices.size());
+  std::vector<VertexID_t *> dThreadBlockKernelTransits = std::vector<VertexID_t *>(nextDoorData.devices.size());
 
-  // std::vector<EdgePos_t *> subWarpKernelTransitsNum = std::vector<EdgePos_t *>(nextDoorData.devices.size());
-  // std::vector<EdgePos_t *> dSubWarpKernelTransitsNum = std::vector<EdgePos_t *>(nextDoorData.devices.size());
-  // std::vector<VertexID_t *> dSubWarpKernelTransits = std::vector<VertexID_t *>(nextDoorData.devices.size());
+  std::vector<EdgePos_t *> subWarpKernelTransitsNum = std::vector<EdgePos_t *>(nextDoorData.devices.size());
+  std::vector<EdgePos_t *> dSubWarpKernelTransitsNum = std::vector<EdgePos_t *>(nextDoorData.devices.size());
+  std::vector<VertexID_t *> dSubWarpKernelTransits = std::vector<VertexID_t *>(nextDoorData.devices.size());
 
-  // std::vector<EdgePos_t *> identityKernelTransitsNum = std::vector<EdgePos_t *>(nextDoorData.devices.size());
-  // std::vector<EdgePos_t *> dIdentityKernelTransitsNum = std::vector<EdgePos_t *>(nextDoorData.devices.size());
-  // /**********************************/
+  std::vector<EdgePos_t *> identityKernelTransitsNum = std::vector<EdgePos_t *>(nextDoorData.devices.size());
+  std::vector<EdgePos_t *> dIdentityKernelTransitsNum = std::vector<EdgePos_t *>(nextDoorData.devices.size());
+  /**********************************/
 
   // /****Variables for Collective Transit Sampling***/
   // std::vector<EdgePos_t *> hSumNeighborhoodSizes = std::vector<EdgePos_t *>(nextDoorData.devices.size(), nullptr);
@@ -1660,56 +1695,57 @@ void doTransitParallelSampling(NextDoorData &nextDoorData, const DGLContext &ctx
   // std::vector<VertexID_t *> dCollectiveNeighborhoodCSRCols = std::vector<VertexID_t *>(nextDoorData.devices.size(), nullptr);
   // std::vector<EdgePos_t *> dCollectiveNeighborhoodCSRRows = std::vector<EdgePos_t *>(nextDoorData.devices.size(), nullptr);
 
-  // std::vector<EdgePos_t *> dInvalidVertexStartPosInMap = std::vector<EdgePos_t *>(nextDoorData.devices.size(), nullptr);
-  // std::vector<EdgePos_t *> invalidVertexStartPosInMap = std::vector<EdgePos_t *>(nextDoorData.devices.size(), nullptr);
+  std::vector<EdgePos_t *> dInvalidVertexStartPosInMap = std::vector<EdgePos_t *>(nextDoorData.devices.size(), nullptr);
+  std::vector<EdgePos_t *> invalidVertexStartPosInMap = std::vector<EdgePos_t *>(nextDoorData.devices.size(), nullptr);
 
-  // /*Single Memory Location on both CPU and GPU for transferring
-  //  *number of transits for all kernels */
-  // std::vector<EdgePos_t *> dKernelTransitNums = std::vector<EdgePos_t *>(nextDoorData.devices.size(), nullptr);
-  // std::vector<EdgePos_t *> hKernelTransitNums = std::vector<EdgePos_t *>(nextDoorData.devices.size(), nullptr);
-  // const int NUM_KERNEL_TYPES = TransitKernelTypes::NumKernelTypes + 1;
+  /*Single Memory Location on both CPU and GPU for transferring
+   *number of transits for all kernels */
+  std::vector<EdgePos_t *> dKernelTransitNums = std::vector<EdgePos_t *>(nextDoorData.devices.size(), nullptr);
+  std::vector<EdgePos_t *> hKernelTransitNums = std::vector<EdgePos_t *>(nextDoorData.devices.size(), nullptr);
+  const int NUM_KERNEL_TYPES = TransitKernelTypes::NumKernelTypes + 1;
 
-  // std::vector<int *> dKernelTypeForTransit = std::vector<int *>(nextDoorData.devices.size(), nullptr);
+  std::vector<int *> dKernelTypeForTransit = std::vector<int *>(nextDoorData.devices.size(), nullptr);
 
   for (size_t deviceIdx = 0; deviceIdx < nextDoorData.devices.size(); deviceIdx++)
   {
     // auto device = nextDoorData.devices[deviceIdx];
     const size_t perDeviceNumSamples = PartDivisionSize(nextDoorData.sampleNum, deviceIdx, numDevices);
     // CHK_CU(cudaSetDevice(device));
+    uniqueTransitNumRuns[deviceIdx] = new EdgePos_t;
+    hKernelTransitNums[deviceIdx] = new EdgePos_t[NUM_KERNEL_TYPES];
     // CHK_CU(cudaMallocHost(&uniqueTransitNumRuns[deviceIdx], sizeof(EdgePos_t)));
     // CHK_CU(cudaMallocHost(&hKernelTransitNums[deviceIdx], NUM_KERNEL_TYPES * sizeof(EdgePos_t)));
 
-    // gridKernelTransitsNum[deviceIdx] = hKernelTransitNums[deviceIdx];
-    // threadBlockKernelTransitsNum[deviceIdx] = hKernelTransitNums[deviceIdx] + 1;
-    // subWarpKernelTransitsNum[deviceIdx] = hKernelTransitNums[deviceIdx] + 2;
-    // identityKernelTransitsNum[deviceIdx] = hKernelTransitNums[deviceIdx] + 3;
-    // invalidVertexStartPosInMap[deviceIdx] = hKernelTransitNums[deviceIdx] + 4;
-    // // threadBlockKernelTransitsNum = hKernelTransitNums[3];
-    // CHK_CU(cudaMalloc(&dKernelTypeForTransit[deviceIdx], sizeof(VertexID_t) * nextDoorData.n_nodes));
-    // CHK_CU(cudaMalloc(&dTransitPositions[deviceIdx],
-    //                   sizeof(VertexID_t) * nextDoorData.n_nodes));
-    // CHK_CU(cudaMalloc(&dGridKernelTransits[deviceIdx],
-    //                   sizeof(VertexID_t) * perDeviceNumSamples * maxNeighborsToSample));
-    // // std::cout << "perDeviceNumSamples " << perDeviceNumSamples << " maxNeighborsToSample " << maxNeighborsToSample << std::endl;
-    // if (useThreadBlockKernel)
-    // {
-    //   CHK_CU(cudaMalloc(&dThreadBlockKernelTransits[deviceIdx],
-    //                     sizeof(VertexID_t) * perDeviceNumSamples * maxNeighborsToSample));
-    // }
+    gridKernelTransitsNum[deviceIdx] = hKernelTransitNums[deviceIdx];
+    threadBlockKernelTransitsNum[deviceIdx] = hKernelTransitNums[deviceIdx] + 1;
+    subWarpKernelTransitsNum[deviceIdx] = hKernelTransitNums[deviceIdx] + 2;
+    identityKernelTransitsNum[deviceIdx] = hKernelTransitNums[deviceIdx] + 3;
+    invalidVertexStartPosInMap[deviceIdx] = hKernelTransitNums[deviceIdx] + 4;
+    // threadBlockKernelTransitsNum = hKernelTransitNums[3];
 
-    // if (useSubWarpKernel)
-    // {
-    //   CHK_CU(cudaMalloc(&dSubWarpKernelTransits[deviceIdx],
-    //                     sizeof(VertexID_t) * perDeviceNumSamples * maxNeighborsToSample));
-    // }
+    dKernelTypeForTransit[deviceIdx] = static_cast<int *>(device->AllocWorkspace(ctx, sizeof(int) * nextDoorData.n_nodes));
+    CUDA_CALL(cudaMemset(dKernelTypeForTransit[deviceIdx], 0, sizeof(int) * nextDoorData.n_nodes));
+    dTransitPositions[deviceIdx] = static_cast<VertexID_t *>(device->AllocWorkspace(ctx, sizeof(VertexID_t) * nextDoorData.n_nodes));
+    dGridKernelTransits[deviceIdx] = static_cast<VertexID_t *>(device->AllocWorkspace(ctx, sizeof(VertexID_t) * perDeviceNumSamples * maxNeighborsToSample));
+    // std::cout << "perDeviceNumSamples " << perDeviceNumSamples << " maxNeighborsToSample " << maxNeighborsToSample << std::endl;
+    if (useThreadBlockKernel)
+    {
+      dThreadBlockKernelTransits[deviceIdx] = static_cast<VertexID_t *>(device->AllocWorkspace(ctx, sizeof(VertexID_t) * perDeviceNumSamples * maxNeighborsToSample));
+    }
 
-    // CHK_CU(cudaMalloc(&dKernelTransitNums[deviceIdx], NUM_KERNEL_TYPES * sizeof(EdgePos_t)));
-    // CHK_CU(cudaMemset(dKernelTransitNums[deviceIdx], 0, NUM_KERNEL_TYPES * sizeof(EdgePos_t)));
-    // dGridKernelTransitsNum[deviceIdx] = dKernelTransitNums[deviceIdx];
-    // dThreadBlockKernelTransitsNum[deviceIdx] = dKernelTransitNums[deviceIdx] + 1;
-    // dSubWarpKernelTransitsNum[deviceIdx] = dKernelTransitNums[deviceIdx] + 2;
-    // dIdentityKernelTransitsNum[deviceIdx] = dKernelTransitNums[deviceIdx] + 3;
-    // dInvalidVertexStartPosInMap[deviceIdx] = dKernelTransitNums[deviceIdx] + 4;
+    if (useSubWarpKernel)
+    {
+      dSubWarpKernelTransits[deviceIdx] = static_cast<VertexID_t *>(device->AllocWorkspace(ctx, sizeof(VertexID_t) * perDeviceNumSamples * maxNeighborsToSample));
+    }
+
+    dKernelTransitNums[deviceIdx] = static_cast<VertexID_t *>(device->AllocWorkspace(ctx, NUM_KERNEL_TYPES * sizeof(EdgePos_t)));
+
+    CUDA_CALL(cudaMemset(dKernelTransitNums[deviceIdx], 0, NUM_KERNEL_TYPES * sizeof(EdgePos_t)));
+    dGridKernelTransitsNum[deviceIdx] = dKernelTransitNums[deviceIdx];
+    dThreadBlockKernelTransitsNum[deviceIdx] = dKernelTransitNums[deviceIdx] + 1;
+    dSubWarpKernelTransitsNum[deviceIdx] = dKernelTransitNums[deviceIdx] + 2;
+    dIdentityKernelTransitsNum[deviceIdx] = dKernelTransitNums[deviceIdx] + 3;
+    dInvalidVertexStartPosInMap[deviceIdx] = dKernelTransitNums[deviceIdx] + 4;
 
     // Check if the space runs out.
     // TODO: Use DoubleBuffer version that requires O(P) space.
@@ -1719,26 +1755,23 @@ void doTransitParallelSampling(NextDoorData &nextDoorData, const DGLContext &ctx
                                     perDeviceNumSamples * maxNeighborsToSample));
 
     d_temp_storage[deviceIdx] = static_cast<VertexID_t*>(device->AllocWorkspace(ctx, temp_storage_bytes[deviceIdx]));
-    // CHK_CU(cudaMalloc(&d_temp_storage[deviceIdx], temp_storage_bytes[deviceIdx]));
     
     d_num_selected_out[deviceIdx] = static_cast<VertexID_t*>(device->AllocWorkspace(ctx, sizeof(VertexID_t)));
-    // CHK_CU(cudaMalloc(&d_num_selected_out[deviceIdx], sizeof(VertexID_t)));
     CUDA_CALL(cub::DeviceSelect::UniqueByKey(d_unique_temp_storage[deviceIdx], unique_temp_storage_bytes[deviceIdx],
                                     nextDoorData.dSamplesToTransitMapValues[deviceIdx], nextDoorData.dTransitToSampleMapKeys[deviceIdx],
                                     nextDoorData.dSamplesToTransitMapKeys[deviceIdx], nextDoorData.dTransitToSampleMapValues[deviceIdx],
                                     d_num_selected_out[deviceIdx], perDeviceNumSamples * maxNeighborsToSample));
 
     d_unique_temp_storage[deviceIdx] = static_cast<VertexID_t*>(device->AllocWorkspace(ctx, unique_temp_storage_bytes[deviceIdx]));
-    // CHK_CU(cudaMalloc(&d_unique_temp_storage[deviceIdx], unique_temp_storage_bytes[deviceIdx]));
 
-    // CUDA_CALL(cudaMemset(nextDoorData.dSampleInsertionPositions[deviceIdx], 0, sizeof(VertexID_t) * perDeviceNumSamples));
+    CUDA_CALL(cudaMemset(nextDoorData.dSampleInsertionPositions[deviceIdx], 0, sizeof(VertexID_t) * perDeviceNumSamples));
 
-    // CHK_CU(cudaMalloc(&dUniqueTransits[deviceIdx], (nextDoorData.n_nodes + 1) * sizeof(VertexID_t)));
-    // CHK_CU(cudaMalloc(&dUniqueTransitsCounts[deviceIdx], (nextDoorData.n_nodes + 1) * sizeof(VertexID_t)));
-    // CHK_CU(cudaMalloc(&dUniqueTransitsNumRuns[deviceIdx], sizeof(size_t)));
+    dUniqueTransits[deviceIdx] = static_cast<VertexID_t *>(device->AllocWorkspace(ctx, (nextDoorData.n_nodes + 1) * sizeof(VertexID_t)));
+    dUniqueTransitsCounts[deviceIdx] = static_cast<VertexID_t *>(device->AllocWorkspace(ctx, (nextDoorData.n_nodes + 1) * sizeof(VertexID_t)));
+    dUniqueTransitsNumRuns[deviceIdx] = static_cast<VertexID_t *>(device->AllocWorkspace(ctx, sizeof(VertexID_t)));
 
-    // CHK_CU(cudaMemset(dUniqueTransitsCounts[deviceIdx], 0, (nextDoorData.n_nodes + 1) * sizeof(VertexID_t)));
-    // CHK_CU(cudaMemset(dUniqueTransitsNumRuns[deviceIdx], 0, sizeof(size_t)));
+    CUDA_CALL(cudaMemset(dUniqueTransitsCounts[deviceIdx], 0, (nextDoorData.n_nodes + 1) * sizeof(VertexID_t)));
+    CUDA_CALL(cudaMemset(dUniqueTransitsNumRuns[deviceIdx], 0, sizeof(size_t)));
   }
 
   std::vector<size_t> totalTransits = std::vector<size_t>(nextDoorData.devices.size());
@@ -1746,14 +1779,6 @@ void doTransitParallelSampling(NextDoorData &nextDoorData, const DGLContext &ctx
   size_t totNeighborsToSampleAtStep = CCGApp().initialSampleSize() * nextDoorData.sampleNum;
   size_t totEdgesToSampleAtStep = CCGApp().initialSampleSize() * nextDoorData.sampleNum;
 
-  // auto _outt = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch());
-  // std::cout << "[PF] bg step_sample " << std::fixed << std::setprecision(7) << (double)(_outt.count() * 0.000001) << "\n";
-
-  // std::cout<<"\n**** before: totalThreads: "<<totEdgesToSampleAtStep<<std::endl;
-  // gpuprint<<<1,1>>>(nextDoorData.dTransitToSampleMapKeys[0], totEdgesToSampleAtStep);
-  // cudaDeviceSynchronize();
-  // gpuprint<<<1,1>>>(nextDoorData.dTransitToSampleMapValues[0], totEdgesToSampleAtStep);
-  // cudaDeviceSynchronize();
   for (int step = 0; step < tot_step; ++step)
   {
     // std::cout<<"step "<<step<<std::endl;
@@ -1774,8 +1799,6 @@ void doTransitParallelSampling(NextDoorData &nextDoorData, const DGLContext &ctx
       // Fix this to make sure a sorted map is always passed.
       for (size_t deviceIdx = 0; deviceIdx < nextDoorData.devices.size(); deviceIdx++)
       {
-        // auto device = nextDoorData.devices[deviceIdx];
-        // CHK_CU(cudaSetDevice(device));
         // Invert sample->transit map by sorting samples based on the transit vertices
         CUDA_CALL(cub::DeviceRadixSort::SortPairs(d_temp_storage[deviceIdx], temp_storage_bytes[deviceIdx],
                                         nextDoorData.dSamplesToTransitMapValues[deviceIdx], nextDoorData.dTransitToSampleMapKeys[deviceIdx],
@@ -1788,8 +1811,6 @@ void doTransitParallelSampling(NextDoorData &nextDoorData, const DGLContext &ctx
 
     totEdgesToSampleAtStep = totNeighborsToSampleAtStep * fanouts[step];
     // neighborsToSampleAtStep = neighborsToSampleAtStep * fanouts[step];
-    // CCGToDGLData *spl_data = new CCGToDGLData(nextDoorData.sampleNum*neighborsToSampleAtStep);
-    // std::cout << spl_data << std::endl;
     const int64_t spl_len = totEdgesToSampleAtStep;
 
     CCGApp().initStepSample(spl_len, ctx);
@@ -1801,449 +1822,501 @@ void doTransitParallelSampling(NextDoorData &nextDoorData, const DGLContext &ctx
       // totalThreads[i] = perDeviceNumSamples * totEdgesToSampleAtStep;
     }
 
-    if (1) // (step == 0 && tot_step > 1) || !enableLoadBalancing
+    if ((step == 0 && tot_step > 1) || !enableLoadBalancing)
     {
+      // auto _st = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch());
       // When not doing load balancing call baseline transit parallel
-      if (1)
+      for (size_t deviceIdx = 0; deviceIdx < nextDoorData.devices.size(); deviceIdx++)
+      {
+        // auto device = nextDoorData.devices[deviceIdx];
+        // CHK_CU(cudaSetDevice(device));
+        // std::cout<<"totalThreads: "<<totalThreads[deviceIdx] << " trace_length: " << trace_length<<" tot_step: "<< tot_step<<std::endl;
+        const VertexID_t deviceSampleStartPtr = PartStartPointer(nextDoorData.sampleNum, deviceIdx, numDevices);
+        for (unsigned long threadsExecuted = 0; threadsExecuted < totalThreads[deviceIdx]; threadsExecuted += nextDoorData.maxThreadsPerKernel[deviceIdx])
+        {
+          size_t currExecutionThreads = min((size_t)nextDoorData.maxThreadsPerKernel[deviceIdx], totalThreads[deviceIdx] - threadsExecuted);
+          samplingKernel<CCGApp, TransitParallelMode::NextFuncExecution, 0><<<utils::thread_block_size(currExecutionThreads, N_THREADS), N_THREADS>>>(
+              step, threadsExecuted, currExecutionThreads, deviceSampleStartPtr, nextDoorData.INVALID_VERTEX,
+              (const VertexID_t *)nextDoorData.dTransitToSampleMapKeys[deviceIdx], (const VertexID_t *)nextDoorData.dTransitToSampleMapValues[deviceIdx],
+              totalThreads[deviceIdx], nextDoorData.dOutputSamples[deviceIdx], nextDoorData.sampleNum,
+              nextDoorData.dSamplesToTransitMapKeys[deviceIdx], nextDoorData.dSamplesToTransitMapValues[deviceIdx], finalSampleSize,
+              nullptr, nullptr, nullptr, nullptr, nextDoorData.dCurandStates[deviceIdx], (int)tot_step, d_fanouts, out_rows, out_cols, out_idxs, out_trace, trace_length);
+          // CUDA_CALL(cudaGetLastError());
+        }
+      }
+      // CUDA_SYNC_DEVICE_ALL(nextDoorData);
+      device->StreamSync(ctx, stream);
+      // auto _ed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch());
+      // std::cout<<"finish samplingKernel "<< std::fixed << std::setprecision(7) << (double)((_ed.count() - _st.count()) * 0.000001) << std::endl;
+    }
+    else
+    {
+      if (0)
+      {
+        // for (size_t deviceIdx = 0; deviceIdx < nextDoorData.devices.size(); deviceIdx++)
+        // {
+        //   auto device = nextDoorData.devices[deviceIdx];
+        //   CHK_CU(cudaSetDevice(device));
+        //   CHK_CU(cudaMemset(nextDoorData.dSampleInsertionPositions[deviceIdx], 0, sizeof(VertexID_t) * nextDoorData.sampleNum));
+        //   CHK_CU(cudaMemset(dSumNeighborhoodSizes[deviceIdx], 0, sizeof(EdgePos_t)));
+        //   CHK_CU(cudaGetLastError());
+        //   CHK_CU(cudaDeviceSynchronize());
+        //   // TODO: Neighborhood is edges of all transit vertices. Hence, neighborhood size is (# of Transit Vertices)/(|G.V|) * |G.E|
+        //   CHK_CU(cudaMemcpy(hSumNeighborhoodSizes[deviceIdx], dSumNeighborhoodSizes[deviceIdx], sizeof(EdgePos_t), cudaMemcpyDeviceToHost));
+        //   // std::cout <<" hSumNeighborhoodSizes " << *hSumNeighborhoodSizes << std::endl;
+        //   CHK_CU(cudaMalloc(&dCollectiveNeighborhoodCSRCols[deviceIdx], sizeof(VertexID_t) * (*hSumNeighborhoodSizes[deviceIdx])));
+        //   CHK_CU(cudaMalloc(&dCollectiveNeighborhoodCSRRows[deviceIdx], sizeof(EdgePos_t) * CCGApp().initialSampleSize() * nextDoorData.sampleNum));
+        // }
+      }
+      else
       {
         for (size_t deviceIdx = 0; deviceIdx < nextDoorData.devices.size(); deviceIdx++)
         {
           // auto device = nextDoorData.devices[deviceIdx];
           // CHK_CU(cudaSetDevice(device));
-          // std::cout<<"totalThreads: "<<totalThreads[deviceIdx] << " trace_length: " << trace_length<<" tot_step: "<< tot_step<<std::endl;
-          const VertexID_t deviceSampleStartPtr = PartStartPointer(nextDoorData.sampleNum, deviceIdx, numDevices);
-          for (unsigned long threadsExecuted = 0; threadsExecuted < totalThreads[deviceIdx]; threadsExecuted += nextDoorData.maxThreadsPerKernel[deviceIdx])
+          CHK_CU(cudaMemset(dKernelTransitNums[deviceIdx], 0, NUM_KERNEL_TYPES * sizeof(EdgePos_t)));
+          CHK_CU(cudaMemset(dInvalidVertexStartPosInMap[deviceIdx], 0xFF, sizeof(EdgePos_t)));
+          // const size_t perDeviceNumSamples = PartDivisionSize(nextDoorData.sampleNum, deviceIdx, numDevices);
+          totalTransits[deviceIdx] = numTransits;
+          // totalTransits[deviceIdx] = perDeviceNumSamples * numTransits;
+
+          // Find the index of first invalid transit vertex.
+          // auto _st = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch());
+          invalidVertexStartPos<<<DIVUP(totalTransits[deviceIdx], 256L), 256>>>(step, nextDoorData.dTransitToSampleMapKeys[deviceIdx],
+                                                                                totalTransits[deviceIdx], nextDoorData.INVALID_VERTEX,
+                                                                                dInvalidVertexStartPosInMap[deviceIdx]);
+          device->StreamSync(ctx, stream);
+          // auto _ed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch());
+          // std::cout<<"finish invalidVertexStartPos "<< std::fixed << std::setprecision(7) << (double)((_ed.count() - _st.count()) * 0.000001) << std::endl;
+          // CHK_CU(cudaGetLastError());
+        }
+
+        // CUDA_SYNC_DEVICE_ALL(nextDoorData);
+
+        for (size_t deviceIdx = 0; deviceIdx < nextDoorData.devices.size(); deviceIdx++)
+        {
+          device->CopyDataFromTo(dInvalidVertexStartPosInMap[deviceIdx], 0, invalidVertexStartPosInMap[deviceIdx], 0, 1 * sizeof(EdgePos_t), ctx, DGLContext{kDGLCPU, 0}, DGLDataType{kDGLInt, 64, 1});
+          // Now the number of threads launched are equal to number of valid transit vertices
+          if (*invalidVertexStartPosInMap[deviceIdx] == -1)
           {
-            size_t currExecutionThreads = min((size_t)nextDoorData.maxThreadsPerKernel[deviceIdx], totalThreads[deviceIdx] - threadsExecuted);
-            // std::cout<<"totalThreads: "<<totalThreads[deviceIdx]<<std::endl;
-            // std::cout<<"nextDoorData.sampleNum: "<<nextDoorData.sampleNum<<std::endl;
-            samplingKernel<CCGApp, TransitParallelMode::NextFuncExecution, 0><<<utils::thread_block_size(currExecutionThreads, N_THREADS), N_THREADS>>>(
-                step, threadsExecuted, currExecutionThreads, deviceSampleStartPtr, nextDoorData.INVALID_VERTEX,
+            *invalidVertexStartPosInMap[deviceIdx] = totalTransits[deviceIdx];
+          }
+          totalThreads[deviceIdx] = *invalidVertexStartPosInMap[deviceIdx];
+        }
+        // printf("invalidVertexStartPosInMap: %ld, totNeighborsToSampleAtStep: %ld, totEdgesToSampleAtStep: %ld, stepsamplesize: %ld\n", *invalidVertexStartPosInMap[0], totNeighborsToSampleAtStep, totEdgesToSampleAtStep, totalThreads[0] * subWarpSizeAtStep(fanouts[step]));
+        
+        // 压缩Tranits数组，可省去
+        for (size_t deviceIdx = 0; deviceIdx < nextDoorData.devices.size(); deviceIdx++)
+        {
+          void *dRunLengthEncodeTmpStorage = nullptr;
+          size_t dRunLengthEncodeTmpStorageSize = 0;
+          // Find the number of transit vertices
+          cub::DeviceRunLengthEncode::Encode(dRunLengthEncodeTmpStorage, dRunLengthEncodeTmpStorageSize,
+                                             nextDoorData.dTransitToSampleMapKeys[deviceIdx],
+                                             dUniqueTransits[deviceIdx], dUniqueTransitsCounts[deviceIdx],
+                                             dUniqueTransitsNumRuns[deviceIdx], totalThreads[deviceIdx]);
+
+          if (dRunLengthEncodeTmpStorageSize > temp_storage_bytes[deviceIdx])
+          {
+            temp_storage_bytes[deviceIdx] = dRunLengthEncodeTmpStorageSize;
+            device->FreeDataSpace(ctx, d_temp_storage[deviceIdx]);
+            d_temp_storage[deviceIdx] = static_cast<VertexID_t *>(device->AllocWorkspace(ctx, temp_storage_bytes[deviceIdx]));
+          }
+          assert(dRunLengthEncodeTmpStorageSize <= temp_storage_bytes[deviceIdx]);
+          dRunLengthEncodeTmpStorage = d_temp_storage[deviceIdx];
+          cub::DeviceRunLengthEncode::Encode(dRunLengthEncodeTmpStorage, dRunLengthEncodeTmpStorageSize,
+                                             nextDoorData.dTransitToSampleMapKeys[deviceIdx],
+                                             dUniqueTransits[deviceIdx], dUniqueTransitsCounts[deviceIdx],
+                                             dUniqueTransitsNumRuns[deviceIdx], totalThreads[deviceIdx]);
+          device->StreamSync(ctx, stream);
+          // CHK_CU(cudaGetLastError());
+        }
+
+        // CUDA_SYNC_DEVICE_ALL(nextDoorData);
+
+        for (size_t deviceIdx = 0; deviceIdx < nextDoorData.devices.size(); deviceIdx++)
+        {
+          device->CopyDataFromTo(dUniqueTransitsNumRuns[deviceIdx], 0, uniqueTransitNumRuns[deviceIdx], 0, sizeof(*uniqueTransitNumRuns[deviceIdx]), ctx, DGLContext{kDGLCPU, 0}, DGLDataType{kDGLInt, 64, 1});
+          void *dExclusiveSumTmpStorage = nullptr;
+          size_t dExclusiveSumTmpStorageSize = 0;
+          // Exclusive sum to obtain the start position of each transit (and its samples) in the map
+          cub::DeviceScan::ExclusiveSum(dExclusiveSumTmpStorage, dExclusiveSumTmpStorageSize, dUniqueTransitsCounts[deviceIdx],
+                                        dTransitPositions[deviceIdx], *uniqueTransitNumRuns[deviceIdx]);
+
+          if (dExclusiveSumTmpStorageSize > temp_storage_bytes[deviceIdx])
+          {
+            temp_storage_bytes[deviceIdx] = dExclusiveSumTmpStorageSize;
+            device->FreeDataSpace(ctx, d_temp_storage[deviceIdx]);
+            d_temp_storage[deviceIdx] = static_cast<VertexID_t *>(device->AllocWorkspace(ctx, temp_storage_bytes[deviceIdx]));
+          }
+          assert(dExclusiveSumTmpStorageSize <= temp_storage_bytes[deviceIdx]);
+          dExclusiveSumTmpStorage = d_temp_storage[deviceIdx];
+          cub::DeviceScan::ExclusiveSum(dExclusiveSumTmpStorage, dExclusiveSumTmpStorageSize, dUniqueTransitsCounts[deviceIdx],
+                                        dTransitPositions[deviceIdx], *uniqueTransitNumRuns[deviceIdx]);
+
+          // CHK_CU(cudaGetLastError());
+          // std::cout<<"unique transits: "<<*uniqueTransitNumRuns[deviceIdx]<<std::endl;
+          // std::cout<<"dUniqueTransits: "<<std::endl;
+          // gpuprint<<<1,1>>>(dUniqueTransits[deviceIdx], *uniqueTransitNumRuns[deviceIdx]);
+          // device->StreamSync(ctx, stream);
+          // std::cout<<"dUniqueTransitsCounts: "<<std::endl;
+          // gpuprint<<<1,1>>>(dUniqueTransitsCounts[deviceIdx], *uniqueTransitNumRuns[deviceIdx], LoadBalancing::LoadBalancingThreshold::GridLevel);
+          // device->StreamSync(ctx, stream);
+          // std::cout<<"Transit position: "<<std::endl;
+          // gpuprint<<<1,1>>>(dTransitPositions[deviceIdx], *uniqueTransitNumRuns[deviceIdx]);
+          // device->StreamSync(ctx, stream);
+        }
+
+        // CUDA_SYNC_DEVICE_ALL(nextDoorData);
+
+        int subWarpSize = subWarpSizeAtStep(fanouts[step]);
+
+        // auto _st = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch());
+        for (size_t deviceIdx = 0; deviceIdx < nextDoorData.devices.size(); deviceIdx++)
+        {
+          // auto device = nextDoorData.devices[deviceIdx];
+          // CHK_CU(cudaSetDevice(device));
+          if (*uniqueTransitNumRuns[deviceIdx] == 0) continue;
+
+          partitionTransitsInKernels<512, TransitKernelTypes::GridKernel, true><<<utils::thread_block_size((*uniqueTransitNumRuns[deviceIdx]), 512L), 512>>>(
+            step, dUniqueTransits[deviceIdx], dUniqueTransitsCounts[deviceIdx],
+            dTransitPositions[deviceIdx], *uniqueTransitNumRuns[deviceIdx], nextDoorData.INVALID_VERTEX, dGridKernelTransits[deviceIdx], dGridKernelTransitsNum[deviceIdx],
+            dThreadBlockKernelTransits[deviceIdx], dThreadBlockKernelTransitsNum[deviceIdx], dSubWarpKernelTransits[deviceIdx], dSubWarpKernelTransitsNum[deviceIdx], nullptr,
+            dIdentityKernelTransitsNum[deviceIdx], dKernelTypeForTransit[deviceIdx], nextDoorData.dTransitToSampleMapKeys[deviceIdx], fanouts[step]);
+
+          device->StreamSync(ctx, stream);
+          // CHK_CU(cudaGetLastError());
+        }
+        // CUDA_SYNC_DEVICE_ALL(nextDoorData);
+
+        if (useThreadBlockKernel and subWarpSize > 1)
+        {
+          for (size_t deviceIdx = 0; deviceIdx < nextDoorData.devices.size(); deviceIdx++)
+          {
+            // auto device = nextDoorData.devices[deviceIdx];
+            // CHK_CU(cudaSetDevice(device));
+            if (*uniqueTransitNumRuns[deviceIdx] == 0) continue;
+            partitionTransitsInKernels<512, TransitKernelTypes::ThreadBlockKernel, false><<<utils::thread_block_size((*uniqueTransitNumRuns[deviceIdx]), 512L), 512>>>(
+              step, dUniqueTransits[deviceIdx], dUniqueTransitsCounts[deviceIdx],
+              dTransitPositions[deviceIdx], *uniqueTransitNumRuns[deviceIdx], nextDoorData.INVALID_VERTEX, dGridKernelTransits[deviceIdx], dGridKernelTransitsNum[deviceIdx],
+              dThreadBlockKernelTransits[deviceIdx], dThreadBlockKernelTransitsNum[deviceIdx], dSubWarpKernelTransits[deviceIdx], dSubWarpKernelTransitsNum[deviceIdx], nullptr,
+              dIdentityKernelTransitsNum[deviceIdx], dKernelTypeForTransit[deviceIdx], nextDoorData.dTransitToSampleMapKeys[deviceIdx], fanouts[step]);
+
+            device->StreamSync(ctx, stream);
+            // CHK_CU(cudaGetLastError());
+          }
+          // CUDA_SYNC_DEVICE_ALL(nextDoorData);
+        }
+        // auto _ed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch());
+        // std::cout<<"finish identityKernel "<< std::fixed << std::setprecision(7) << (double)((_ed.count() - _st.count()) * 0.000001) << std::endl;
+
+        for (size_t deviceIdx = 0; deviceIdx < nextDoorData.devices.size(); deviceIdx++)
+        {
+          // auto device = nextDoorData.devices[deviceIdx];
+          // CHK_CU(cudaSetDevice(device));
+          if (*uniqueTransitNumRuns[deviceIdx] == 0) continue;
+          device->CopyDataFromTo(dKernelTransitNums[deviceIdx], 0, hKernelTransitNums[deviceIdx], 0, NUM_KERNEL_TYPES * sizeof(EdgePos_t), ctx, DGLContext{kDGLCPU, 0}, DGLDataType{kDGLInt, 64, 1});
+          // CHK_CU(cudaMemcpy(hKernelTransitNums[deviceIdx], dKernelTransitNums[deviceIdx], NUM_KERNEL_TYPES * sizeof(EdgePos_t), cudaMemcpyDeviceToHost));
+          // From each Transit we sample stepSize(step) vertices
+          totalThreads[deviceIdx] = totalThreads[deviceIdx] * subWarpSize;
+        }
+
+        bool noTransitsForAllDevices = true;
+        for (size_t deviceIdx = 0; deviceIdx < nextDoorData.devices.size(); deviceIdx++)
+        {
+          // auto device = nextDoorData.devices[deviceIdx];
+          if (*uniqueTransitNumRuns[deviceIdx] > 0)
+          {
+            noTransitsForAllDevices = false;
+          }
+        }
+
+        if (noTransitsForAllDevices)
+        {
+          std::cout<<"No transits for all devices. Stop."<<std::endl;
+          break; // End Sampling because no more transits exists
+        }
+        // std::cout << "gridKernelTransitsNum " << *(hKernelTransitNums[0]) << std::endl;
+        // std::cout << "threadBlockKernelTransitsNum " << *(hKernelTransitNums[0] + 1) << std::endl;
+        // std::cout << "subWarpKernelTransitsNum " << *(hKernelTransitNums[0] + 2) << std::endl;
+        // std::cout << "identityKernelTransitsNum " << *(hKernelTransitNums[0] + 3) << std::endl;
+        // std::cout << "invalidVertexStartPosInMap " << *(hKernelTransitNums[0] + 4) << std::endl;
+
+        // std::cout<<" TransitToSample: "<<std::endl;
+        // gpuprint<<<1,1>>>(nextDoorData.dTransitToSampleMapKeys[0], totEdgesToSampleAtStep);
+        // device->StreamSync(ctx, stream);
+        // gpuprint<<<1,1>>>(nextDoorData.dTransitToSampleMapValues[0], totEdgesToSampleAtStep);
+        // device->StreamSync(ctx, stream);
+        // std::cout<<" SamplesToTransitMap: "<<std::endl;
+        // gpuprint<<<1,1>>>(nextDoorData.dSamplesToTransitMapKeys[0], totEdgesToSampleAtStep);
+        // device->StreamSync(ctx, stream);
+        // gpuprint<<<1,1>>>(nextDoorData.dSamplesToTransitMapValues[0], totEdgesToSampleAtStep);
+        // device->StreamSync(ctx, stream);
+        for (size_t deviceIdx = 0; deviceIdx < nextDoorData.devices.size(); deviceIdx++)
+        {
+          // auto device = nextDoorData.devices[deviceIdx];
+          // CHK_CU(cudaSetDevice(device));
+          if (*uniqueTransitNumRuns[deviceIdx] == 0) continue;
+          const size_t maxThreadBlocksPerKernel = min(8192L, nextDoorData.maxThreadsPerKernel[deviceIdx] / 256L);
+          const VertexID_t deviceSampleStartPtr = PartStartPointer(nextDoorData.sampleNum, deviceIdx, numDevices);
+          if (*identityKernelTransitsNum[deviceIdx] > 0)
+          {
+            // CHK_CU(cudaGetLastError());
+            // _st = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch());
+            // std::cout<<"\n**** before identityKernel: totEdgesToSampleAtStep: "<<totEdgesToSampleAtStep<<std::endl;
+            if (CCGApp().hasExplicitTransits())
+            {
+              identityKernel<CCGApp, 256, true, true><<<maxThreadBlocksPerKernel, 256>>>(
+                step,deviceSampleStartPtr, nextDoorData.INVALID_VERTEX,
                 (const VertexID_t *)nextDoorData.dTransitToSampleMapKeys[deviceIdx], (const VertexID_t *)nextDoorData.dTransitToSampleMapValues[deviceIdx],
                 totalThreads[deviceIdx], nextDoorData.dOutputSamples[deviceIdx], nextDoorData.sampleNum,
-                nextDoorData.dSamplesToTransitMapKeys[deviceIdx], nextDoorData.dSamplesToTransitMapValues[deviceIdx], finalSampleSize,
-                nullptr, nullptr, nullptr, nullptr, nextDoorData.dCurandStates[deviceIdx], (int)tot_step, d_fanouts, out_rows, out_cols, out_idxs, out_trace, trace_length);
-            CUDA_CALL(cudaGetLastError());
+                nextDoorData.dSamplesToTransitMapKeys[deviceIdx], nextDoorData.dSamplesToTransitMapValues[deviceIdx],
+                nextDoorData.dFinalSamples[deviceIdx], finalSampleSize, nextDoorData.dSampleInsertionPositions[deviceIdx],
+                nextDoorData.dCurandStates[deviceIdx], dKernelTypeForTransit[deviceIdx], fanouts[step],
+                d_fanouts, tot_step, out_rows, out_cols, out_idxs, out_trace, trace_length);
+            }
+            else
+            {
+              identityKernel<CCGApp, 256, true, false><<<maxThreadBlocksPerKernel, 256>>>(
+                step,deviceSampleStartPtr, nextDoorData.INVALID_VERTEX,
+                (const VertexID_t *)nextDoorData.dTransitToSampleMapKeys[deviceIdx], (const VertexID_t *)nextDoorData.dTransitToSampleMapValues[deviceIdx],
+                totalThreads[deviceIdx], nextDoorData.dOutputSamples[deviceIdx], nextDoorData.sampleNum,
+                nextDoorData.dSamplesToTransitMapKeys[deviceIdx], nextDoorData.dSamplesToTransitMapValues[deviceIdx],
+                nextDoorData.dFinalSamples[deviceIdx], finalSampleSize, nextDoorData.dSampleInsertionPositions[deviceIdx],
+                nextDoorData.dCurandStates[deviceIdx], dKernelTypeForTransit[deviceIdx], fanouts[step],
+                d_fanouts, tot_step, out_rows, out_cols, out_idxs, out_trace, trace_length);
+            }
+            device->StreamSync(ctx, stream);
+            // _ed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch());
+            // std::cout<<"finish identityKernel "<< std::fixed << std::setprecision(7) << (double)((_ed.count() - _st.count()) * 0.000001) << std::endl;
+            // std::cout<<"\n**** after identityKernel: totEdgesToSampleAtStep: "<<totEdgesToSampleAtStep<<std::endl;
           }
         }
         // CUDA_SYNC_DEVICE_ALL(nextDoorData);
-        device->StreamSync(ctx, stream);
+
+        if (subWarpSize > 1)
+        {
+          // throw "subWarpSize > 1";
+          EdgePos_t finalSampleSizeTillPreviousStep = 0;
+          EdgePos_t neighborsToSampleAtStep = 1;
+          for (int _s = 0; _s < step; _s++)
+          {
+            neighborsToSampleAtStep *= fanouts[_s];
+            finalSampleSizeTillPreviousStep += neighborsToSampleAtStep;
+          }
+
+          for (size_t deviceIdx = 0; deviceIdx < nextDoorData.devices.size(); deviceIdx++)
+          {
+            // auto device = nextDoorData.devices[deviceIdx];
+            // CHK_CU(cudaSetDevice(device));
+
+            // Process more than one thread blocks positions written in dGridKernelTransits per thread block.
+            // Processing more can improve the locality if thread blocks have common transits.
+            const int perThreadSamplesForThreadBlockKernel = 4; // Works best for KHop 8 ?
+            const int tbSize = 256L;
+            // 4096
+            const size_t maxThreadBlocksPerKernel = min(8192L, nextDoorData.maxThreadsPerKernel[deviceIdx] / tbSize);
+            const VertexID_t deviceSampleStartPtr = PartStartPointer(nextDoorData.sampleNum, deviceIdx, numDevices);
+            const size_t threadBlocks = DIVUP((DIVUP((*threadBlockKernelTransitsNum[deviceIdx] * LoadBalancing::LoadBalancingThreshold::BlockLevel), tbSize)), perThreadSamplesForThreadBlockKernel);
+
+            if (useThreadBlockKernel && *threadBlockKernelTransitsNum[deviceIdx] > 0)
+            { // && numberOfTransits(step) > 1) {
+              // FIXME: A Bug in Grid Kernel prevents it from being used when numberOfTransits for a sample at step are 1.
+              //  for (int threadBlocksExecuted = 0; threadBlocksExecuted < threadBlocks; threadBlocksExecuted += nextDoorData.maxThreadsPerKernel/256) {
+              const bool CACHE_EDGES = true;
+              const bool CACHE_WEIGHTS = false;
+              const int CACHE_SIZE = (CACHE_EDGES || CACHE_WEIGHTS) ? 384 : 0;
+              // printf("device %d threadBlockKernelTransitsNum %d threadBlocks %d\n", device, *threadBlockKernelTransitsNum[deviceIdx], threadBlocks);
+              // std::cout<<"\n**** before threadBlockKernel: totEdgesToSampleAtStep: "<<totEdgesToSampleAtStep<<" totNeighborsToSampleAtStep: "<<totNeighborsToSampleAtStep<<std::endl;
+              // _st = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch());
+              // VertexID_t* vis = static_cast<VertexID_t *>(device->AllocWorkspace(ctx, sizeof(VertexID_t) * totNeighborsToSampleAtStep));
+              // CUDA_CALL(cudaMemset(vis, 0, sizeof(VertexID_t) * totNeighborsToSampleAtStep));
+              switch (subWarpSizeAtStep(fanouts[step]))
+              {
+              case 32:
+                threadBlockKernel<CCGApp, tbSize, CACHE_SIZE, CACHE_EDGES, CACHE_WEIGHTS, perThreadSamplesForThreadBlockKernel, false, 0, 32><<<maxThreadBlocksPerKernel, tbSize>>>(
+                  step, deviceSampleStartPtr, nextDoorData.INVALID_VERTEX,
+                  (const VertexID_t *)nextDoorData.dTransitToSampleMapKeys[deviceIdx], (const VertexID_t *)nextDoorData.dTransitToSampleMapValues[deviceIdx],
+                  spl_len, nextDoorData.dOutputSamples[deviceIdx], nextDoorData.sampleNum,
+                  nextDoorData.dSamplesToTransitMapKeys[deviceIdx], nextDoorData.dSamplesToTransitMapValues[deviceIdx],
+                  nextDoorData.dFinalSamples[deviceIdx], finalSampleSize, nextDoorData.dSampleInsertionPositions[deviceIdx],
+                  nextDoorData.dCurandStates[deviceIdx], dKernelTypeForTransit[deviceIdx], dThreadBlockKernelTransits[deviceIdx],
+                  *threadBlockKernelTransitsNum[deviceIdx], (int)threadBlocks, (int)fanouts[step], finalSampleSizeTillPreviousStep,
+                  d_fanouts, tot_step, out_rows, out_cols, out_idxs, out_trace, trace_length);
+                break;
+                // case 16:
+                //   threadBlockKernel<tbSize,CACHE_SIZE,CACHE_EDGES,CACHE_WEIGHTS,perThreadSamplesForThreadBlockKernel,false,0,16><<<maxThreadBlocksPerKernel, tbSize>>>(step,
+                //     deviceSampleStartPtr, nextDoorData.INVALID_VERTEX,
+                //     (const VertexID_t*)nextDoorData.dTransitToSampleMapKeys[deviceIdx], (const VertexID_t*)nextDoorData.dTransitToSampleMapValues[deviceIdx],
+                //     totalThreads[deviceIdx],  nextDoorData.dOutputSamples[deviceIdx], nextDoorData.sampleNum,
+                //     nextDoorData.dSamplesToTransitMapKeys[deviceIdx], nextDoorData.dSamplesToTransitMapValues[deviceIdx],
+                //     nextDoorData.dFinalSamples[deviceIdx], finalSampleSize, nextDoorData.dSampleInsertionPositions[deviceIdx],
+                //     nextDoorData.dCurandStates[deviceIdx], dKernelTypeForTransit[deviceIdx], dThreadBlockKernelTransits[deviceIdx], *threadBlockKernelTransitsNum[deviceIdx], threadBlocks, fanouts[step], finalSampleSizeTillPreviousStep, d_fanouts, tot_step, out_rows, out_cols, out_idxs, sampledSize);
+                //     break;
+                // case 8:
+                //   threadBlockKernel<tbSize,CACHE_SIZE,CACHE_EDGES,CACHE_WEIGHTS,perThreadSamplesForThreadBlockKernel,false,0,8><<<maxThreadBlocksPerKernel, tbSize>>>(step,
+                //     deviceSampleStartPtr, nextDoorData.INVALID_VERTEX,
+                //     (const VertexID_t*)nextDoorData.dTransitToSampleMapKeys[deviceIdx], (const VertexID_t*)nextDoorData.dTransitToSampleMapValues[deviceIdx],
+                //     totalThreads[deviceIdx],  nextDoorData.dOutputSamples[deviceIdx], nextDoorData.sampleNum,
+                //     nextDoorData.dSamplesToTransitMapKeys[deviceIdx], nextDoorData.dSamplesToTransitMapValues[deviceIdx],
+                //     nextDoorData.dFinalSamples[deviceIdx], finalSampleSize, nextDoorData.dSampleInsertionPositions[deviceIdx],
+                //     nextDoorData.dCurandStates[deviceIdx], dKernelTypeForTransit[deviceIdx], dThreadBlockKernelTransits[deviceIdx], *threadBlockKernelTransitsNum[deviceIdx], threadBlocks, fanouts[step], finalSampleSizeTillPreviousStep, d_fanouts, tot_step, out_rows, out_cols, out_idxs, sampledSize);
+                //     break;
+                // case 4:
+                //   threadBlockKernel<tbSize,CACHE_SIZE,CACHE_EDGES,CACHE_WEIGHTS,perThreadSamplesForThreadBlockKernel,false,0,4><<<maxThreadBlocksPerKernel, tbSize>>>(step,
+                //     deviceSampleStartPtr, nextDoorData.INVALID_VERTEX,
+                //     (const VertexID_t*)nextDoorData.dTransitToSampleMapKeys[deviceIdx], (const VertexID_t*)nextDoorData.dTransitToSampleMapValues[deviceIdx],
+                //     totalThreads[deviceIdx],  nextDoorData.dOutputSamples[deviceIdx], nextDoorData.sampleNum,
+                //     nextDoorData.dSamplesToTransitMapKeys[deviceIdx], nextDoorData.dSamplesToTransitMapValues[deviceIdx],
+                //     nextDoorData.dFinalSamples[deviceIdx], finalSampleSize, nextDoorData.dSampleInsertionPositions[deviceIdx],
+                //     nextDoorData.dCurandStates[deviceIdx], dKernelTypeForTransit[deviceIdx], dThreadBlockKernelTransits[deviceIdx], *threadBlockKernelTransitsNum[deviceIdx], threadBlocks, fanouts[step], finalSampleSizeTillPreviousStep, d_fanouts, tot_step, out_rows, out_cols, out_idxs, sampledSize);
+                //     break;
+                // case 2:
+                //   threadBlockKernel<tbSize,CACHE_SIZE,CACHE_EDGES,CACHE_WEIGHTS,perThreadSamplesForThreadBlockKernel,false,0,2><<<maxThreadBlocksPerKernel, tbSize>>>(step,
+                //     deviceSampleStartPtr, nextDoorData.INVALID_VERTEX,
+                //     (const VertexID_t*)nextDoorData.dTransitToSampleMapKeys[deviceIdx], (const VertexID_t*)nextDoorData.dTransitToSampleMapValues[deviceIdx],
+                //     totalThreads[deviceIdx],  nextDoorData.dOutputSamples[deviceIdx], nextDoorData.sampleNum,
+                //     nextDoorData.dSamplesToTransitMapKeys[deviceIdx], nextDoorData.dSamplesToTransitMapValues[deviceIdx],
+                //     nextDoorData.dFinalSamples[deviceIdx], finalSampleSize, nextDoorData.dSampleInsertionPositions[deviceIdx],
+                //     nextDoorData.dCurandStates[deviceIdx], dKernelTypeForTransit[deviceIdx], dThreadBlockKernelTransits[deviceIdx], *threadBlockKernelTransitsNum[deviceIdx], threadBlocks, fanouts[step], finalSampleSizeTillPreviousStep, d_fanouts, tot_step, out_rows, out_cols, out_idxs, sampledSize);
+                //     break;
+                // case 1:
+                //   threadBlockKernel<tbSize,CACHE_SIZE,CACHE_EDGES,CACHE_WEIGHTS,perThreadSamplesForThreadBlockKernel,false,0,1><<<maxThreadBlocksPerKernel, tbSize>>>(step,
+                //     deviceSampleStartPtr, nextDoorData.INVALID_VERTEX,
+                //     (const VertexID_t*)nextDoorData.dTransitToSampleMapKeys[deviceIdx], (const VertexID_t*)nextDoorData.dTransitToSampleMapValues[deviceIdx],
+                //     totalThreads[deviceIdx],  nextDoorData.dOutputSamples[deviceIdx], nextDoorData.sampleNum,
+                //     nextDoorData.dSamplesToTransitMapKeys[deviceIdx], nextDoorData.dSamplesToTransitMapValues[deviceIdx],
+                //     nextDoorData.dFinalSamples[deviceIdx], finalSampleSize, nextDoorData.dSampleInsertionPositions[deviceIdx],
+                //     nextDoorData.dCurandStates[deviceIdx], dKernelTypeForTransit[deviceIdx], dThreadBlockKernelTransits[deviceIdx], *threadBlockKernelTransitsNum[deviceIdx], threadBlocks, fanouts[step], finalSampleSizeTillPreviousStep, d_fanouts, tot_step, out_rows, out_cols, out_idxs, sampledSize);
+                //     break;
+              }
+              // CHK_CU(cudaGetLastError());
+              device->StreamSync(ctx, stream);
+              // _ed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch());
+              // std::cout<<"finish threadblockKernel "<< std::fixed << std::setprecision(7) << (double)((_ed.count() - _st.count()) * 0.000001) << std::endl;
+
+              // gpucknull<<<1,1>>>(vis, totNeighborsToSampleAtStep);
+              // device->FreeWorkspace(ctx, vis);
+              // std::cout<<"\n**** after threadBlockKernel: totEdgesToSampleAtStep: "<<totEdgesToSampleAtStep<<std::endl;
+              // CHK_CU(cudaDeviceSynchronize());
+              // }
+            }
+          }
+
+          // CUDA_SYNC_DEVICE_ALL(nextDoorData);
+
+          for (size_t deviceIdx = 0; deviceIdx < nextDoorData.devices.size(); deviceIdx++)
+          {
+            // auto device = nextDoorData.devices[deviceIdx];
+            // CHK_CU(cudaSetDevice(device));
+
+            // Process more than one thread blocks positions written in dGridKernelTransits per thread block.
+            // Processing more can improve the locality if thread blocks have common transits.
+            const int perThreadSamplesForGridKernel = 8;
+            // const int perThreadSamplesForGridKernel = 16; // Works best for KHop
+
+            const size_t maxThreadBlocksPerKernel = min(4096L, nextDoorData.maxThreadsPerKernel[deviceIdx] / 256L);
+            const VertexID_t deviceSampleStartPtr = PartStartPointer(nextDoorData.sampleNum, deviceIdx, numDevices);
+            const size_t threadBlocks = DIVUP(*gridKernelTransitsNum[deviceIdx], perThreadSamplesForGridKernel);
+            // printf("device %d gridTransitsNum %d threadBlocks %d\n", device, *gridKernelTransitsNum[deviceIdx], threadBlocks);
+
+            if (useGridKernel && *gridKernelTransitsNum[deviceIdx] > 0)
+            { // && numberOfTransits(step) > 1) {
+              // FIXME: A Bug in Grid Kernel prevents it from being used when numberOfTransits for a sample at step are 1.
+              const bool CACHE_EDGES = true;
+              const bool CACHE_WEIGHTS = false;
+              const int CACHE_SIZE = (CACHE_EDGES || CACHE_WEIGHTS) ? 3 * 1024 - 10 : 0;
+              // std::cout<<"\n**** before gridKernel: totEdgesToSampleAtStep: "<<totEdgesToSampleAtStep<<std::endl;
+              // _st = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch());
+              switch (subWarpSizeAtStep(fanouts[step]))
+              {
+              case 32:
+                gridKernel<CCGApp, 256, CACHE_SIZE, CACHE_EDGES, CACHE_WEIGHTS, false, perThreadSamplesForGridKernel, true, false, 256, 32><<<maxThreadBlocksPerKernel, 256>>>(
+                  step,deviceSampleStartPtr, nextDoorData.INVALID_VERTEX,
+                  (const VertexID_t *)nextDoorData.dTransitToSampleMapKeys[deviceIdx], (const VertexID_t *)nextDoorData.dTransitToSampleMapValues[deviceIdx],
+                  totalThreads[deviceIdx], nextDoorData.dOutputSamples[deviceIdx], nextDoorData.sampleNum,
+                  nextDoorData.dSamplesToTransitMapKeys[deviceIdx], nextDoorData.dSamplesToTransitMapValues[deviceIdx],
+                  nextDoorData.dFinalSamples[deviceIdx], finalSampleSize, nextDoorData.dSampleInsertionPositions[deviceIdx],
+                  nextDoorData.dCurandStates[deviceIdx], dKernelTypeForTransit[deviceIdx], dGridKernelTransits[deviceIdx],
+                  *gridKernelTransitsNum[deviceIdx], threadBlocks, fanouts[step], finalSampleSizeTillPreviousStep,
+                  d_fanouts, (int)tot_step, out_rows, out_cols, out_idxs, out_trace, trace_length);
+                break;
+              case 16:
+                gridKernel<CCGApp, 256, CACHE_SIZE, CACHE_EDGES, CACHE_WEIGHTS, false, perThreadSamplesForGridKernel, true, true, 256, 16><<<maxThreadBlocksPerKernel, 256>>>(
+                  step, deviceSampleStartPtr, nextDoorData.INVALID_VERTEX,
+                  (const VertexID_t *)nextDoorData.dTransitToSampleMapKeys[deviceIdx], (const VertexID_t *)nextDoorData.dTransitToSampleMapValues[deviceIdx],
+                  totalThreads[deviceIdx], nextDoorData.dOutputSamples[deviceIdx], nextDoorData.sampleNum,
+                  nextDoorData.dSamplesToTransitMapKeys[deviceIdx], nextDoorData.dSamplesToTransitMapValues[deviceIdx],
+                  nextDoorData.dFinalSamples[deviceIdx], finalSampleSize, nextDoorData.dSampleInsertionPositions[deviceIdx],
+                  nextDoorData.dCurandStates[deviceIdx], dKernelTypeForTransit[deviceIdx], dGridKernelTransits[deviceIdx],
+                  *gridKernelTransitsNum[deviceIdx], threadBlocks, fanouts[step], finalSampleSizeTillPreviousStep,
+                  d_fanouts, (int)tot_step, out_rows, out_cols, out_idxs, out_trace, trace_length);
+                break;
+              case 8:
+                gridKernel<CCGApp, 256, CACHE_SIZE, CACHE_EDGES, CACHE_WEIGHTS, false, perThreadSamplesForGridKernel, true, true, 256, 8><<<maxThreadBlocksPerKernel, 256>>>(
+                  step, deviceSampleStartPtr, nextDoorData.INVALID_VERTEX,
+                  (const VertexID_t *)nextDoorData.dTransitToSampleMapKeys[deviceIdx], (const VertexID_t *)nextDoorData.dTransitToSampleMapValues[deviceIdx],
+                  totalThreads[deviceIdx], nextDoorData.dOutputSamples[deviceIdx], nextDoorData.sampleNum,
+                  nextDoorData.dSamplesToTransitMapKeys[deviceIdx], nextDoorData.dSamplesToTransitMapValues[deviceIdx],
+                  nextDoorData.dFinalSamples[deviceIdx], finalSampleSize, nextDoorData.dSampleInsertionPositions[deviceIdx],
+                  nextDoorData.dCurandStates[deviceIdx], dKernelTypeForTransit[deviceIdx], dGridKernelTransits[deviceIdx],
+                  *gridKernelTransitsNum[deviceIdx], threadBlocks, fanouts[step], finalSampleSizeTillPreviousStep,
+                  d_fanouts, (int)tot_step, out_rows, out_cols, out_idxs, out_trace, trace_length);
+                break;
+              case 4:
+                gridKernel<CCGApp, 256, CACHE_SIZE, CACHE_EDGES, CACHE_WEIGHTS, false, perThreadSamplesForGridKernel, true, true, 256, 4><<<maxThreadBlocksPerKernel, 256>>>(
+                  step, deviceSampleStartPtr, nextDoorData.INVALID_VERTEX,
+                  (const VertexID_t *)nextDoorData.dTransitToSampleMapKeys[deviceIdx], (const VertexID_t *)nextDoorData.dTransitToSampleMapValues[deviceIdx],
+                  totalThreads[deviceIdx], nextDoorData.dOutputSamples[deviceIdx], nextDoorData.sampleNum,
+                  nextDoorData.dSamplesToTransitMapKeys[deviceIdx], nextDoorData.dSamplesToTransitMapValues[deviceIdx],
+                  nextDoorData.dFinalSamples[deviceIdx], finalSampleSize, nextDoorData.dSampleInsertionPositions[deviceIdx],
+                  nextDoorData.dCurandStates[deviceIdx], dKernelTypeForTransit[deviceIdx], dGridKernelTransits[deviceIdx],
+                  *gridKernelTransitsNum[deviceIdx], threadBlocks, fanouts[step], finalSampleSizeTillPreviousStep,
+                  d_fanouts, (int)tot_step, out_rows, out_cols, out_idxs, out_trace, trace_length);
+                break;
+              case 2:
+                gridKernel<CCGApp, 256, CACHE_SIZE, CACHE_EDGES, CACHE_WEIGHTS, false, perThreadSamplesForGridKernel, true, true, 256, 2><<<maxThreadBlocksPerKernel, 256>>>(
+                  step, deviceSampleStartPtr, nextDoorData.INVALID_VERTEX,
+                  (const VertexID_t *)nextDoorData.dTransitToSampleMapKeys[deviceIdx], (const VertexID_t *)nextDoorData.dTransitToSampleMapValues[deviceIdx],
+                  totalThreads[deviceIdx], nextDoorData.dOutputSamples[deviceIdx], nextDoorData.sampleNum,
+                  nextDoorData.dSamplesToTransitMapKeys[deviceIdx], nextDoorData.dSamplesToTransitMapValues[deviceIdx],
+                  nextDoorData.dFinalSamples[deviceIdx], finalSampleSize, nextDoorData.dSampleInsertionPositions[deviceIdx],
+                  nextDoorData.dCurandStates[deviceIdx], dKernelTypeForTransit[deviceIdx], dGridKernelTransits[deviceIdx],
+                  *gridKernelTransitsNum[deviceIdx], threadBlocks, fanouts[step], finalSampleSizeTillPreviousStep,
+                  d_fanouts, (int)tot_step, out_rows, out_cols, out_idxs, out_trace, trace_length);
+                break;
+              case 1:
+                gridKernel<CCGApp, 256, CACHE_SIZE, CACHE_EDGES, CACHE_WEIGHTS, false, perThreadSamplesForGridKernel, true, true, 256, 1><<<maxThreadBlocksPerKernel, 256>>>(
+                  step, deviceSampleStartPtr, nextDoorData.INVALID_VERTEX,
+                  (const VertexID_t *)nextDoorData.dTransitToSampleMapKeys[deviceIdx], (const VertexID_t *)nextDoorData.dTransitToSampleMapValues[deviceIdx],
+                  totalThreads[deviceIdx], nextDoorData.dOutputSamples[deviceIdx], nextDoorData.sampleNum,
+                  nextDoorData.dSamplesToTransitMapKeys[deviceIdx], nextDoorData.dSamplesToTransitMapValues[deviceIdx],
+                  nextDoorData.dFinalSamples[deviceIdx], finalSampleSize, nextDoorData.dSampleInsertionPositions[deviceIdx],
+                  nextDoorData.dCurandStates[deviceIdx], dKernelTypeForTransit[deviceIdx], dGridKernelTransits[deviceIdx],
+                  *gridKernelTransitsNum[deviceIdx], threadBlocks, fanouts[step], finalSampleSizeTillPreviousStep,
+                  d_fanouts, (int)tot_step, out_rows, out_cols, out_idxs, out_trace, trace_length);
+                break;
+              default:
+                // TODO: Add others
+                break;
+              }
+              device->StreamSync(ctx, stream);
+              // _ed = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch());
+              // std::cout<<"finish gridKernel "<< std::fixed << std::setprecision(7) << (double)((_ed.count() - _st.count()) * 0.000001) << std::endl;
+              // std::cout<<"\n**** after gridKernel: totEdgesToSampleAtStep: "<<totEdgesToSampleAtStep<<std::endl;
+              // CHK_CU(cudaGetLastError());
+              // }
+            }
+          }
+          // CUDA_SYNC_DEVICE_ALL(nextDoorData);
+        }
       }
     }
-    // else
-    // {
-    //   if (0)
-    //   {
-    //     for (size_t deviceIdx = 0; deviceIdx < nextDoorData.devices.size(); deviceIdx++)
-    //     {
-    //       auto device = nextDoorData.devices[deviceIdx];
-    //       CHK_CU(cudaSetDevice(device));
-    //       CHK_CU(cudaMemset(nextDoorData.dSampleInsertionPositions[deviceIdx], 0, sizeof(VertexID_t) * nextDoorData.sampleNum));
-    //       CHK_CU(cudaMemset(dSumNeighborhoodSizes[deviceIdx], 0, sizeof(EdgePos_t)));
-    //       CHK_CU(cudaGetLastError());
-    //       CHK_CU(cudaDeviceSynchronize());
-    //       // TODO: Neighborhood is edges of all transit vertices. Hence, neighborhood size is (# of Transit Vertices)/(|G.V|) * |G.E|
-    //       CHK_CU(cudaMemcpy(hSumNeighborhoodSizes[deviceIdx], dSumNeighborhoodSizes[deviceIdx], sizeof(EdgePos_t), cudaMemcpyDeviceToHost));
-    //       // std::cout <<" hSumNeighborhoodSizes " << *hSumNeighborhoodSizes << std::endl;
-    //       CHK_CU(cudaMalloc(&dCollectiveNeighborhoodCSRCols[deviceIdx], sizeof(VertexID_t) * (*hSumNeighborhoodSizes[deviceIdx])));
-    //       CHK_CU(cudaMalloc(&dCollectiveNeighborhoodCSRRows[deviceIdx], sizeof(EdgePos_t) * CCGApp().initialSampleSize() * nextDoorData.sampleNum));
-    //     }
-    //   }
-    //   else
-    //   {
-    //     for (size_t deviceIdx = 0; deviceIdx < nextDoorData.devices.size(); deviceIdx++)
-    //     {
-    //       auto device = nextDoorData.devices[deviceIdx];
-    //       CHK_CU(cudaSetDevice(device));
-    //       CHK_CU(cudaMemset(dKernelTransitNums[deviceIdx], 0, NUM_KERNEL_TYPES * sizeof(EdgePos_t)));
-    //       CHK_CU(cudaMemset(dInvalidVertexStartPosInMap[deviceIdx], 0xFF, sizeof(EdgePos_t)));
-    //       const size_t perDeviceNumSamples = PartDivisionSize(nextDoorData.sampleNum, deviceIdx, numDevices);
-    //       totalTransits[deviceIdx] = perDeviceNumSamples * numTransits;
-
-    //       // Find the index of first invalid transit vertex.
-    //       invalidVertexStartPos<<<DIVUP(totalTransits[deviceIdx], 256L), 256>>>(step, nextDoorData.dTransitToSampleMapKeys[deviceIdx],
-    //                                                                             totalTransits[deviceIdx], nextDoorData.INVALID_VERTEX,
-    //                                                                             dInvalidVertexStartPosInMap[deviceIdx]);
-    //       CHK_CU(cudaGetLastError());
-    //     }
-
-    //     CUDA_SYNC_DEVICE_ALL(nextDoorData);
-
-    //     for (size_t deviceIdx = 0; deviceIdx < nextDoorData.devices.size(); deviceIdx++)
-    //     {
-    //       auto device = nextDoorData.devices[deviceIdx];
-    //       CHK_CU(cudaSetDevice(device));
-    //       CHK_CU(cudaMemcpy(invalidVertexStartPosInMap[deviceIdx], dInvalidVertexStartPosInMap[deviceIdx],
-    //                         1 * sizeof(EdgePos_t), cudaMemcpyDeviceToHost));
-    //       // Now the number of threads launched are equal to number of valid transit vertices
-    //       if (*invalidVertexStartPosInMap[deviceIdx] == -1)
-    //       {
-    //         *invalidVertexStartPosInMap[deviceIdx] = totalTransits[deviceIdx];
-    //       }
-    //       totalThreads[deviceIdx] = *invalidVertexStartPosInMap[deviceIdx];
-    //       std::cout<<"number of valid transit vertices: "<<totalThreads[deviceIdx]<<std::endl;
-    //     }
-        
-    //     // 压缩Tranits数组，可省去
-    //     for (size_t deviceIdx = 0; deviceIdx < nextDoorData.devices.size(); deviceIdx++)
-    //     {
-    //       auto device = nextDoorData.devices[deviceIdx];
-    //       CHK_CU(cudaSetDevice(device));
-    //       void *dRunLengthEncodeTmpStorage = nullptr;
-    //       size_t dRunLengthEncodeTmpStorageSize = 0;
-    //       // Find the number of transit vertices
-    //       cub::DeviceRunLengthEncode::Encode(dRunLengthEncodeTmpStorage, dRunLengthEncodeTmpStorageSize,
-    //                                          nextDoorData.dTransitToSampleMapKeys[deviceIdx],
-    //                                          dUniqueTransits[deviceIdx], dUniqueTransitsCounts[deviceIdx],
-    //                                          dUniqueTransitsNumRuns[deviceIdx], totalThreads[deviceIdx]);
-
-    //       if (dRunLengthEncodeTmpStorageSize > temp_storage_bytes[deviceIdx])
-    //       {
-    //         temp_storage_bytes[deviceIdx] = dRunLengthEncodeTmpStorageSize;
-    //         CHK_CU(cudaFree(d_temp_storage[deviceIdx]));
-    //         CHK_CU(cudaMalloc(&d_temp_storage[deviceIdx], temp_storage_bytes[deviceIdx]));
-    //       }
-    //       assert(dRunLengthEncodeTmpStorageSize <= temp_storage_bytes[deviceIdx]);
-    //       dRunLengthEncodeTmpStorage = d_temp_storage[deviceIdx];
-    //       cub::DeviceRunLengthEncode::Encode(dRunLengthEncodeTmpStorage, dRunLengthEncodeTmpStorageSize,
-    //                                          nextDoorData.dTransitToSampleMapKeys[deviceIdx],
-    //                                          dUniqueTransits[deviceIdx], dUniqueTransitsCounts[deviceIdx],
-    //                                          dUniqueTransitsNumRuns[deviceIdx], totalThreads[deviceIdx]);
-    //       CHK_CU(cudaGetLastError());
-    //     }
-
-    //     CUDA_SYNC_DEVICE_ALL(nextDoorData);
-
-    //     for (size_t deviceIdx = 0; deviceIdx < nextDoorData.devices.size(); deviceIdx++)
-    //     {
-    //       auto device = nextDoorData.devices[deviceIdx];
-    //       CHK_CU(cudaSetDevice(device));
-    //       // dUniqueTransitsNumRuns 为不同的tranits个数
-    //       CHK_CU(cudaMemcpy(uniqueTransitNumRuns[deviceIdx], dUniqueTransitsNumRuns[deviceIdx],
-    //                         sizeof(*uniqueTransitNumRuns[deviceIdx]), cudaMemcpyDeviceToHost));
-    //       void *dExclusiveSumTmpStorage = nullptr;
-    //       size_t dExclusiveSumTmpStorageSize = 0;
-    //       // Exclusive sum to obtain the start position of each transit (and its samples) in the map
-    //       cub::DeviceScan::ExclusiveSum(dExclusiveSumTmpStorage, dExclusiveSumTmpStorageSize, dUniqueTransitsCounts[deviceIdx],
-    //                                     dTransitPositions[deviceIdx], *uniqueTransitNumRuns[deviceIdx]);
-
-    //       if (dExclusiveSumTmpStorageSize > temp_storage_bytes[deviceIdx])
-    //       {
-    //         temp_storage_bytes[deviceIdx] = dExclusiveSumTmpStorageSize;
-    //         CHK_CU(cudaFree(d_temp_storage[deviceIdx]));
-    //         CHK_CU(cudaMalloc(&d_temp_storage[deviceIdx], temp_storage_bytes[deviceIdx]));
-    //       }
-    //       assert(dExclusiveSumTmpStorageSize <= temp_storage_bytes[deviceIdx]);
-    //       dExclusiveSumTmpStorage = d_temp_storage[deviceIdx];
-    //       // dTransitPositions[i] 为第i个transit在dTransitToSampleMapKeys中的起始位置
-    //       // uniqueTransitNumRuns 为不同的tranits个数
-    //       cub::DeviceScan::ExclusiveSum(dExclusiveSumTmpStorage, dExclusiveSumTmpStorageSize, dUniqueTransitsCounts[deviceIdx],
-    //                                     dTransitPositions[deviceIdx], *uniqueTransitNumRuns[deviceIdx]);
-
-    //       CHK_CU(cudaGetLastError());
-    //       std::cout<<"Transit position: "<<std::endl;
-    //       gpuprint<<<1,1>>>(dTransitPositions[deviceIdx], *uniqueTransitNumRuns[deviceIdx]);
-    //     }
-        
-
-    //     CUDA_SYNC_DEVICE_ALL(nextDoorData);
-
-    //     int subWarpSize = subWarpSizeAtStep(fanouts[step]);
-
-    //     for (size_t deviceIdx = 0; deviceIdx < nextDoorData.devices.size(); deviceIdx++)
-    //     {
-    //       auto device = nextDoorData.devices[deviceIdx];
-    //       CHK_CU(cudaSetDevice(device));
-    //       if (*uniqueTransitNumRuns[deviceIdx] == 0)
-    //         continue;
-
-    //       partitionTransitsInKernels<512, TransitKernelTypes::GridKernel, true><<<utils::thread_block_size((*uniqueTransitNumRuns[deviceIdx]), 512L), 512>>>(step, dUniqueTransits[deviceIdx], dUniqueTransitsCounts[deviceIdx],
-    //                                                                                                                                                          dTransitPositions[deviceIdx], *uniqueTransitNumRuns[deviceIdx], nextDoorData.INVALID_VERTEX, dGridKernelTransits[deviceIdx], dGridKernelTransitsNum[deviceIdx],
-    //                                                                                                                                                          dThreadBlockKernelTransits[deviceIdx], dThreadBlockKernelTransitsNum[deviceIdx], dSubWarpKernelTransits[deviceIdx], dSubWarpKernelTransitsNum[deviceIdx], nullptr,
-    //                                                                                                                                                          dIdentityKernelTransitsNum[deviceIdx], dKernelTypeForTransit[deviceIdx], nextDoorData.dTransitToSampleMapKeys[deviceIdx], fanouts[step]);
-
-    //       CHK_CU(cudaGetLastError());
-    //     }
-
-    //     CUDA_SYNC_DEVICE_ALL(nextDoorData);
-
-    //     if (useThreadBlockKernel and subWarpSize > 1)
-    //     {
-    //       for (size_t deviceIdx = 0; deviceIdx < nextDoorData.devices.size(); deviceIdx++)
-    //       {
-    //         auto device = nextDoorData.devices[deviceIdx];
-    //         CHK_CU(cudaSetDevice(device));
-    //         if (*uniqueTransitNumRuns[deviceIdx] == 0)
-    //           continue;
-
-    //         partitionTransitsInKernels<512, TransitKernelTypes::ThreadBlockKernel, false><<<utils::thread_block_size((*uniqueTransitNumRuns[deviceIdx]), 512L), 512>>>(step, dUniqueTransits[deviceIdx], dUniqueTransitsCounts[deviceIdx],
-    //                                                                                                                                                                    dTransitPositions[deviceIdx], *uniqueTransitNumRuns[deviceIdx], nextDoorData.INVALID_VERTEX, dGridKernelTransits[deviceIdx], dGridKernelTransitsNum[deviceIdx],
-    //                                                                                                                                                                    dThreadBlockKernelTransits[deviceIdx], dThreadBlockKernelTransitsNum[deviceIdx], dSubWarpKernelTransits[deviceIdx], dSubWarpKernelTransitsNum[deviceIdx], nullptr,
-    //                                                                                                                                                                    dIdentityKernelTransitsNum[deviceIdx], dKernelTypeForTransit[deviceIdx], nextDoorData.dTransitToSampleMapKeys[deviceIdx], fanouts[step]);
-
-    //         CHK_CU(cudaGetLastError());
-    //       }
-
-    //       CUDA_SYNC_DEVICE_ALL(nextDoorData);
-    //     }
-
-    //     for (size_t deviceIdx = 0; deviceIdx < nextDoorData.devices.size(); deviceIdx++)
-    //     {
-    //       auto device = nextDoorData.devices[deviceIdx];
-    //       CHK_CU(cudaSetDevice(device));
-    //       if (*uniqueTransitNumRuns[deviceIdx] == 0)
-    //         continue;
-    //       CHK_CU(cudaMemcpy(hKernelTransitNums[deviceIdx], dKernelTransitNums[deviceIdx], NUM_KERNEL_TYPES * sizeof(EdgePos_t), cudaMemcpyDeviceToHost));
-    //       // From each Transit we sample stepSize(step) vertices
-    //       totalThreads[deviceIdx] = totalThreads[deviceIdx] * subWarpSize;
-    //     }
-
-    //     bool noTransitsForAllDevices = true;
-    //     for (size_t deviceIdx = 0; deviceIdx < nextDoorData.devices.size(); deviceIdx++)
-    //     {
-    //       auto device = nextDoorData.devices[deviceIdx];
-    //       if (*uniqueTransitNumRuns[deviceIdx] > 0)
-    //       {
-    //         noTransitsForAllDevices = false;
-    //       }
-    //     }
-
-    //     if (noTransitsForAllDevices)
-    //       break; // End Sampling because no more transits exists
-
-    //     std::cout << "gridKernelTransitsNum " << *(hKernelTransitNums[0]) << std::endl;
-    //     std::cout << "threadBlockKernelTransitsNum " << *(hKernelTransitNums[0] + 1) << std::endl;
-    //     std::cout << "subWarpKernelTransitsNum " << *(hKernelTransitNums[0] + 2) << std::endl;
-    //     std::cout << "identityKernelTransitsNum " << *(hKernelTransitNums[0] + 3) << std::endl;
-    //     std::cout << "invalidVertexStartPosInMap " << *(hKernelTransitNums[0] + 4) << std::endl;
-
-    //     for (size_t deviceIdx = 0; deviceIdx < nextDoorData.devices.size(); deviceIdx++)
-    //     {
-    //       auto device = nextDoorData.devices[deviceIdx];
-    //       CHK_CU(cudaSetDevice(device));
-    //       if (*uniqueTransitNumRuns[deviceIdx] == 0)
-    //         continue;
-    //       const size_t maxThreadBlocksPerKernel = min(8192L, nextDoorData.maxThreadsPerKernel[deviceIdx] / 256L);
-    //       const VertexID_t deviceSampleStartPtr = PartStartPointer(nextDoorData.sampleNum, deviceIdx, numDevices);
-    //       if (*identityKernelTransitsNum[deviceIdx] > 0)
-    //       {
-    //         CHK_CU(cudaGetLastError());
-    //         if (CCGApp().hasExplicitTransits())
-    //         {
-    //           identityKernel<256, true, true><<<maxThreadBlocksPerKernel, 256>>>(step,
-    //                                                                              deviceSampleStartPtr, nextDoorData.INVALID_VERTEX,
-    //                                                                              (const VertexID_t *)nextDoorData.dTransitToSampleMapKeys[deviceIdx], (const VertexID_t *)nextDoorData.dTransitToSampleMapValues[deviceIdx],
-    //                                                                              totalThreads[deviceIdx], nextDoorData.dOutputSamples[deviceIdx], nextDoorData.sampleNum,
-    //                                                                              nextDoorData.dSamplesToTransitMapKeys[deviceIdx], nextDoorData.dSamplesToTransitMapValues[deviceIdx],
-    //                                                                              nextDoorData.dFinalSamples[deviceIdx], finalSampleSize, nextDoorData.dSampleInsertionPositions[deviceIdx],
-    //                                                                              nextDoorData.dCurandStates[deviceIdx], dKernelTypeForTransit[deviceIdx], fanouts[step], (int)tot_step, d_fanouts, out_rows, out_cols, out_idxs);
-    //         }
-    //         else
-    //         {
-    //           identityKernel<256, true, false><<<maxThreadBlocksPerKernel, 256>>>(step,
-    //                                                                               deviceSampleStartPtr, nextDoorData.INVALID_VERTEX,
-    //                                                                               (const VertexID_t *)nextDoorData.dTransitToSampleMapKeys[deviceIdx], (const VertexID_t *)nextDoorData.dTransitToSampleMapValues[deviceIdx],
-    //                                                                               totalThreads[deviceIdx], nextDoorData.dOutputSamples[deviceIdx], nextDoorData.sampleNum,
-    //                                                                               nextDoorData.dSamplesToTransitMapKeys[deviceIdx], nextDoorData.dSamplesToTransitMapValues[deviceIdx],
-    //                                                                               nextDoorData.dFinalSamples[deviceIdx], finalSampleSize, nextDoorData.dSampleInsertionPositions[deviceIdx],
-    //                                                                               nextDoorData.dCurandStates[deviceIdx], dKernelTypeForTransit[deviceIdx], fanouts[step], (int)tot_step, d_fanouts, out_rows, out_cols, out_idxs);
-    //         }
-    //         CHK_CU(cudaGetLastError());
-    //         // gpuprint<<<1,1>>>(nextDoorData.dTransitToSampleMapValues[deviceIdx]);
-    //       }
-    //     }
-
-    //     CUDA_SYNC_DEVICE_ALL(nextDoorData);
-
-    //     if (subWarpSize > 1)
-    //     {
-    //       EdgePos_t finalSampleSizeTillPreviousStep = 0;
-    //       EdgePos_t neighborsToSampleAtStep = 1;
-    //       for (int _s = 0; _s < step; _s++)
-    //       {
-    //         neighborsToSampleAtStep *= fanouts[_s];
-    //         finalSampleSizeTillPreviousStep += neighborsToSampleAtStep;
-    //       }
-
-    //       for (size_t deviceIdx = 0; deviceIdx < nextDoorData.devices.size(); deviceIdx++)
-    //       {
-    //         auto device = nextDoorData.devices[deviceIdx];
-    //         CHK_CU(cudaSetDevice(device));
-    //         // Process more than one thread blocks positions written in dGridKernelTransits per thread block.
-    //         // Processing more can improve the locality if thread blocks have common transits.
-    //         const int perThreadSamplesForThreadBlockKernel = 4; // Works best for KHop 8 ?
-    //         const int tbSize = 256L;
-    //         const size_t maxThreadBlocksPerKernel = min(4096L, nextDoorData.maxThreadsPerKernel[deviceIdx] / tbSize);
-    //         const VertexID_t deviceSampleStartPtr = PartStartPointer(nextDoorData.sampleNum, deviceIdx, numDevices);
-    //         const size_t threadBlocks = DIVUP((DIVUP((*threadBlockKernelTransitsNum[deviceIdx] * LoadBalancing::LoadBalancingThreshold::BlockLevel), tbSize)), perThreadSamplesForThreadBlockKernel);
-
-    //         if (useThreadBlockKernel && *threadBlockKernelTransitsNum[deviceIdx] > 0)
-    //         { // && numberOfTransits(step) > 1) {
-    //           // FIXME: A Bug in Grid Kernel prevents it from being used when numberOfTransits for a sample at step are 1.
-    //           //  for (int threadBlocksExecuted = 0; threadBlocksExecuted < threadBlocks; threadBlocksExecuted += nextDoorData.maxThreadsPerKernel/256) {
-    //           const bool CACHE_EDGES = true;
-    //           const bool CACHE_WEIGHTS = false;
-    //           const int CACHE_SIZE = (CACHE_EDGES || CACHE_WEIGHTS) ? 384 : 0;
-    //           // printf("device %d threadBlockKernelTransitsNum %d threadBlocks %d\n", device, *threadBlockKernelTransitsNum[deviceIdx], threadBlocks);
-    //           switch (subWarpSizeAtStep(fanouts[step]))
-    //           {
-    //           case 32:
-    //             threadBlockKernel<tbSize, CACHE_SIZE, CACHE_EDGES, CACHE_WEIGHTS, perThreadSamplesForThreadBlockKernel, false, 0, 32><<<maxThreadBlocksPerKernel, tbSize>>>(step,
-    //                                                                                                                                                                         deviceSampleStartPtr, nextDoorData.INVALID_VERTEX,
-    //                                                                                                                                                                         (const VertexID_t *)nextDoorData.dTransitToSampleMapKeys[deviceIdx], (const VertexID_t *)nextDoorData.dTransitToSampleMapValues[deviceIdx],
-    //                                                                                                                                                                         totalThreads[deviceIdx], nextDoorData.dOutputSamples[deviceIdx], nextDoorData.sampleNum,
-    //                                                                                                                                                                         nextDoorData.dSamplesToTransitMapKeys[deviceIdx], nextDoorData.dSamplesToTransitMapValues[deviceIdx],
-    //                                                                                                                                                                         nextDoorData.dFinalSamples[deviceIdx], finalSampleSize, nextDoorData.dSampleInsertionPositions[deviceIdx],
-    //                                                                                                                                                                         nextDoorData.dCurandStates[deviceIdx], dKernelTypeForTransit[deviceIdx], dThreadBlockKernelTransits[deviceIdx], *threadBlockKernelTransitsNum[deviceIdx], threadBlocks, fanouts[step], finalSampleSizeTillPreviousStep, d_fanouts, tot_step, out_rows, out_cols, out_idxs);
-    //             break;
-    //             // case 16:
-    //             //   threadBlockKernel<tbSize,CACHE_SIZE,CACHE_EDGES,CACHE_WEIGHTS,perThreadSamplesForThreadBlockKernel,false,0,16><<<maxThreadBlocksPerKernel, tbSize>>>(step,
-    //             //     deviceSampleStartPtr, nextDoorData.INVALID_VERTEX,
-    //             //     (const VertexID_t*)nextDoorData.dTransitToSampleMapKeys[deviceIdx], (const VertexID_t*)nextDoorData.dTransitToSampleMapValues[deviceIdx],
-    //             //     totalThreads[deviceIdx],  nextDoorData.dOutputSamples[deviceIdx], nextDoorData.sampleNum,
-    //             //     nextDoorData.dSamplesToTransitMapKeys[deviceIdx], nextDoorData.dSamplesToTransitMapValues[deviceIdx],
-    //             //     nextDoorData.dFinalSamples[deviceIdx], finalSampleSize, nextDoorData.dSampleInsertionPositions[deviceIdx],
-    //             //     nextDoorData.dCurandStates[deviceIdx], dKernelTypeForTransit[deviceIdx], dThreadBlockKernelTransits[deviceIdx], *threadBlockKernelTransitsNum[deviceIdx], threadBlocks, fanouts[step], finalSampleSizeTillPreviousStep, d_fanouts, tot_step, out_rows, out_cols, out_idxs, sampledSize);
-    //             //     break;
-    //             // case 8:
-    //             //   threadBlockKernel<tbSize,CACHE_SIZE,CACHE_EDGES,CACHE_WEIGHTS,perThreadSamplesForThreadBlockKernel,false,0,8><<<maxThreadBlocksPerKernel, tbSize>>>(step,
-    //             //     deviceSampleStartPtr, nextDoorData.INVALID_VERTEX,
-    //             //     (const VertexID_t*)nextDoorData.dTransitToSampleMapKeys[deviceIdx], (const VertexID_t*)nextDoorData.dTransitToSampleMapValues[deviceIdx],
-    //             //     totalThreads[deviceIdx],  nextDoorData.dOutputSamples[deviceIdx], nextDoorData.sampleNum,
-    //             //     nextDoorData.dSamplesToTransitMapKeys[deviceIdx], nextDoorData.dSamplesToTransitMapValues[deviceIdx],
-    //             //     nextDoorData.dFinalSamples[deviceIdx], finalSampleSize, nextDoorData.dSampleInsertionPositions[deviceIdx],
-    //             //     nextDoorData.dCurandStates[deviceIdx], dKernelTypeForTransit[deviceIdx], dThreadBlockKernelTransits[deviceIdx], *threadBlockKernelTransitsNum[deviceIdx], threadBlocks, fanouts[step], finalSampleSizeTillPreviousStep, d_fanouts, tot_step, out_rows, out_cols, out_idxs, sampledSize);
-    //             //     break;
-    //             // case 4:
-    //             //   threadBlockKernel<tbSize,CACHE_SIZE,CACHE_EDGES,CACHE_WEIGHTS,perThreadSamplesForThreadBlockKernel,false,0,4><<<maxThreadBlocksPerKernel, tbSize>>>(step,
-    //             //     deviceSampleStartPtr, nextDoorData.INVALID_VERTEX,
-    //             //     (const VertexID_t*)nextDoorData.dTransitToSampleMapKeys[deviceIdx], (const VertexID_t*)nextDoorData.dTransitToSampleMapValues[deviceIdx],
-    //             //     totalThreads[deviceIdx],  nextDoorData.dOutputSamples[deviceIdx], nextDoorData.sampleNum,
-    //             //     nextDoorData.dSamplesToTransitMapKeys[deviceIdx], nextDoorData.dSamplesToTransitMapValues[deviceIdx],
-    //             //     nextDoorData.dFinalSamples[deviceIdx], finalSampleSize, nextDoorData.dSampleInsertionPositions[deviceIdx],
-    //             //     nextDoorData.dCurandStates[deviceIdx], dKernelTypeForTransit[deviceIdx], dThreadBlockKernelTransits[deviceIdx], *threadBlockKernelTransitsNum[deviceIdx], threadBlocks, fanouts[step], finalSampleSizeTillPreviousStep, d_fanouts, tot_step, out_rows, out_cols, out_idxs, sampledSize);
-    //             //     break;
-    //             // case 2:
-    //             //   threadBlockKernel<tbSize,CACHE_SIZE,CACHE_EDGES,CACHE_WEIGHTS,perThreadSamplesForThreadBlockKernel,false,0,2><<<maxThreadBlocksPerKernel, tbSize>>>(step,
-    //             //     deviceSampleStartPtr, nextDoorData.INVALID_VERTEX,
-    //             //     (const VertexID_t*)nextDoorData.dTransitToSampleMapKeys[deviceIdx], (const VertexID_t*)nextDoorData.dTransitToSampleMapValues[deviceIdx],
-    //             //     totalThreads[deviceIdx],  nextDoorData.dOutputSamples[deviceIdx], nextDoorData.sampleNum,
-    //             //     nextDoorData.dSamplesToTransitMapKeys[deviceIdx], nextDoorData.dSamplesToTransitMapValues[deviceIdx],
-    //             //     nextDoorData.dFinalSamples[deviceIdx], finalSampleSize, nextDoorData.dSampleInsertionPositions[deviceIdx],
-    //             //     nextDoorData.dCurandStates[deviceIdx], dKernelTypeForTransit[deviceIdx], dThreadBlockKernelTransits[deviceIdx], *threadBlockKernelTransitsNum[deviceIdx], threadBlocks, fanouts[step], finalSampleSizeTillPreviousStep, d_fanouts, tot_step, out_rows, out_cols, out_idxs, sampledSize);
-    //             //     break;
-    //             // case 1:
-    //             //   threadBlockKernel<tbSize,CACHE_SIZE,CACHE_EDGES,CACHE_WEIGHTS,perThreadSamplesForThreadBlockKernel,false,0,1><<<maxThreadBlocksPerKernel, tbSize>>>(step,
-    //             //     deviceSampleStartPtr, nextDoorData.INVALID_VERTEX,
-    //             //     (const VertexID_t*)nextDoorData.dTransitToSampleMapKeys[deviceIdx], (const VertexID_t*)nextDoorData.dTransitToSampleMapValues[deviceIdx],
-    //             //     totalThreads[deviceIdx],  nextDoorData.dOutputSamples[deviceIdx], nextDoorData.sampleNum,
-    //             //     nextDoorData.dSamplesToTransitMapKeys[deviceIdx], nextDoorData.dSamplesToTransitMapValues[deviceIdx],
-    //             //     nextDoorData.dFinalSamples[deviceIdx], finalSampleSize, nextDoorData.dSampleInsertionPositions[deviceIdx],
-    //             //     nextDoorData.dCurandStates[deviceIdx], dKernelTypeForTransit[deviceIdx], dThreadBlockKernelTransits[deviceIdx], *threadBlockKernelTransitsNum[deviceIdx], threadBlocks, fanouts[step], finalSampleSizeTillPreviousStep, d_fanouts, tot_step, out_rows, out_cols, out_idxs, sampledSize);
-    //             //     break;
-    //           }
-    //           CHK_CU(cudaGetLastError());
-    //           // CHK_CU(cudaDeviceSynchronize());
-    //           // }
-    //         }
-    //       }
-
-    //       CUDA_SYNC_DEVICE_ALL(nextDoorData);
-
-    //       for (size_t deviceIdx = 0; deviceIdx < nextDoorData.devices.size(); deviceIdx++)
-    //       {
-    //         auto device = nextDoorData.devices[deviceIdx];
-    //         CHK_CU(cudaSetDevice(device));
-    //         // Process more than one thread blocks positions written in dGridKernelTransits per thread block.
-    //         // Processing more can improve the locality if thread blocks have common transits.
-    //         const int perThreadSamplesForGridKernel = 8;
-    //         // const int perThreadSamplesForGridKernel = 16; // Works best for KHop
-
-    //         const size_t maxThreadBlocksPerKernel = min(4096L, nextDoorData.maxThreadsPerKernel[deviceIdx] / 256L);
-    //         const VertexID_t deviceSampleStartPtr = PartStartPointer(nextDoorData.sampleNum, deviceIdx, numDevices);
-    //         const size_t threadBlocks = DIVUP(*gridKernelTransitsNum[deviceIdx], perThreadSamplesForGridKernel);
-    //         // printf("device %d gridTransitsNum %d threadBlocks %d\n", device, *gridKernelTransitsNum[deviceIdx], threadBlocks);
-
-    //         if (useGridKernel && *gridKernelTransitsNum[deviceIdx] > 0)
-    //         { // && numberOfTransits(step) > 1) {
-    //           // FIXME: A Bug in Grid Kernel prevents it from being used when numberOfTransits for a sample at step are 1.
-    //           const bool CACHE_EDGES = true;
-    //           const bool CACHE_WEIGHTS = false;
-    //           const int CACHE_SIZE = (CACHE_EDGES || CACHE_WEIGHTS) ? 3 * 1024 - 10 : 0;
-    //           switch (subWarpSizeAtStep(fanouts[step]))
-    //           {
-    //           case 32:
-    //             gridKernel<256, CACHE_SIZE, CACHE_EDGES, CACHE_WEIGHTS, false, perThreadSamplesForGridKernel, true, false, 256, 32><<<maxThreadBlocksPerKernel, 256>>>(step,
-    //                                                                                                                                                                    deviceSampleStartPtr, nextDoorData.INVALID_VERTEX,
-    //                                                                                                                                                                    (const VertexID_t *)nextDoorData.dTransitToSampleMapKeys[deviceIdx], (const VertexID_t *)nextDoorData.dTransitToSampleMapValues[deviceIdx],
-    //                                                                                                                                                                    totalThreads[deviceIdx], nextDoorData.dOutputSamples[deviceIdx], nextDoorData.sampleNum,
-    //                                                                                                                                                                    nextDoorData.dSamplesToTransitMapKeys[deviceIdx], nextDoorData.dSamplesToTransitMapValues[deviceIdx],
-    //                                                                                                                                                                    nextDoorData.dFinalSamples[deviceIdx], finalSampleSize, nextDoorData.dSampleInsertionPositions[deviceIdx],
-    //                                                                                                                                                                    nextDoorData.dCurandStates[deviceIdx], dKernelTypeForTransit[deviceIdx], dGridKernelTransits[deviceIdx],
-    //                                                                                                                                                                    *gridKernelTransitsNum[deviceIdx], threadBlocks, fanouts[step], finalSampleSizeTillPreviousStep, d_fanouts, (int)tot_step, out_rows, out_cols, out_idxs);
-    //             break;
-    //           case 16:
-    //             gridKernel<256, CACHE_SIZE, CACHE_EDGES, CACHE_WEIGHTS, false, perThreadSamplesForGridKernel, true, true, 256, 16><<<maxThreadBlocksPerKernel, 256>>>(step,
-    //                                                                                                                                                                   deviceSampleStartPtr, nextDoorData.INVALID_VERTEX,
-    //                                                                                                                                                                   (const VertexID_t *)nextDoorData.dTransitToSampleMapKeys[deviceIdx], (const VertexID_t *)nextDoorData.dTransitToSampleMapValues[deviceIdx],
-    //                                                                                                                                                                   totalThreads[deviceIdx], nextDoorData.dOutputSamples[deviceIdx], nextDoorData.sampleNum,
-    //                                                                                                                                                                   nextDoorData.dSamplesToTransitMapKeys[deviceIdx], nextDoorData.dSamplesToTransitMapValues[deviceIdx],
-    //                                                                                                                                                                   nextDoorData.dFinalSamples[deviceIdx], finalSampleSize, nextDoorData.dSampleInsertionPositions[deviceIdx],
-    //                                                                                                                                                                   nextDoorData.dCurandStates[deviceIdx], dKernelTypeForTransit[deviceIdx], dGridKernelTransits[deviceIdx], *gridKernelTransitsNum[deviceIdx], threadBlocks, fanouts[step], finalSampleSizeTillPreviousStep, d_fanouts, (int)tot_step, out_rows, out_cols, out_idxs);
-    //             break;
-    //           case 8:
-    //             gridKernel<256, CACHE_SIZE, CACHE_EDGES, CACHE_WEIGHTS, false, perThreadSamplesForGridKernel, true, true, 256, 8><<<maxThreadBlocksPerKernel, 256>>>(step,
-    //                                                                                                                                                                  deviceSampleStartPtr, nextDoorData.INVALID_VERTEX,
-    //                                                                                                                                                                  (const VertexID_t *)nextDoorData.dTransitToSampleMapKeys[deviceIdx], (const VertexID_t *)nextDoorData.dTransitToSampleMapValues[deviceIdx],
-    //                                                                                                                                                                  totalThreads[deviceIdx], nextDoorData.dOutputSamples[deviceIdx], nextDoorData.sampleNum,
-    //                                                                                                                                                                  nextDoorData.dSamplesToTransitMapKeys[deviceIdx], nextDoorData.dSamplesToTransitMapValues[deviceIdx],
-    //                                                                                                                                                                  nextDoorData.dFinalSamples[deviceIdx], finalSampleSize, nextDoorData.dSampleInsertionPositions[deviceIdx],
-    //                                                                                                                                                                  nextDoorData.dCurandStates[deviceIdx], dKernelTypeForTransit[deviceIdx], dGridKernelTransits[deviceIdx], *gridKernelTransitsNum[deviceIdx], threadBlocks, fanouts[step], finalSampleSizeTillPreviousStep, d_fanouts, (int)tot_step, out_rows, out_cols, out_idxs);
-    //             break;
-    //           case 4:
-    //             gridKernel<256, CACHE_SIZE, CACHE_EDGES, CACHE_WEIGHTS, false, perThreadSamplesForGridKernel, true, true, 256, 4><<<maxThreadBlocksPerKernel, 256>>>(step,
-    //                                                                                                                                                                  deviceSampleStartPtr, nextDoorData.INVALID_VERTEX,
-    //                                                                                                                                                                  (const VertexID_t *)nextDoorData.dTransitToSampleMapKeys[deviceIdx], (const VertexID_t *)nextDoorData.dTransitToSampleMapValues[deviceIdx],
-    //                                                                                                                                                                  totalThreads[deviceIdx], nextDoorData.dOutputSamples[deviceIdx], nextDoorData.sampleNum,
-    //                                                                                                                                                                  nextDoorData.dSamplesToTransitMapKeys[deviceIdx], nextDoorData.dSamplesToTransitMapValues[deviceIdx],
-    //                                                                                                                                                                  nextDoorData.dFinalSamples[deviceIdx], finalSampleSize, nextDoorData.dSampleInsertionPositions[deviceIdx],
-    //                                                                                                                                                                  nextDoorData.dCurandStates[deviceIdx], dKernelTypeForTransit[deviceIdx], dGridKernelTransits[deviceIdx], *gridKernelTransitsNum[deviceIdx], threadBlocks, fanouts[step], finalSampleSizeTillPreviousStep, d_fanouts, (int)tot_step, out_rows, out_cols, out_idxs);
-    //             break;
-    //           case 2:
-    //             gridKernel<256, CACHE_SIZE, CACHE_EDGES, CACHE_WEIGHTS, false, perThreadSamplesForGridKernel, true, true, 256, 2><<<maxThreadBlocksPerKernel, 256>>>(step,
-    //                                                                                                                                                                  deviceSampleStartPtr, nextDoorData.INVALID_VERTEX,
-    //                                                                                                                                                                  (const VertexID_t *)nextDoorData.dTransitToSampleMapKeys[deviceIdx], (const VertexID_t *)nextDoorData.dTransitToSampleMapValues[deviceIdx],
-    //                                                                                                                                                                  totalThreads[deviceIdx], nextDoorData.dOutputSamples[deviceIdx], nextDoorData.sampleNum,
-    //                                                                                                                                                                  nextDoorData.dSamplesToTransitMapKeys[deviceIdx], nextDoorData.dSamplesToTransitMapValues[deviceIdx],
-    //                                                                                                                                                                  nextDoorData.dFinalSamples[deviceIdx], finalSampleSize, nextDoorData.dSampleInsertionPositions[deviceIdx],
-    //                                                                                                                                                                  nextDoorData.dCurandStates[deviceIdx], dKernelTypeForTransit[deviceIdx], dGridKernelTransits[deviceIdx], *gridKernelTransitsNum[deviceIdx], threadBlocks, fanouts[step], finalSampleSizeTillPreviousStep, d_fanouts, (int)tot_step, out_rows, out_cols, out_idxs);
-    //             break;
-    //           case 1:
-    //             gridKernel<256, CACHE_SIZE, CACHE_EDGES, CACHE_WEIGHTS, false, perThreadSamplesForGridKernel, true, true, 256, 1><<<maxThreadBlocksPerKernel, 256>>>(step,
-    //                                                                                                                                                                  deviceSampleStartPtr, nextDoorData.INVALID_VERTEX,
-    //                                                                                                                                                                  (const VertexID_t *)nextDoorData.dTransitToSampleMapKeys[deviceIdx], (const VertexID_t *)nextDoorData.dTransitToSampleMapValues[deviceIdx],
-    //                                                                                                                                                                  totalThreads[deviceIdx], nextDoorData.dOutputSamples[deviceIdx], nextDoorData.sampleNum,
-    //                                                                                                                                                                  nextDoorData.dSamplesToTransitMapKeys[deviceIdx], nextDoorData.dSamplesToTransitMapValues[deviceIdx],
-    //                                                                                                                                                                  nextDoorData.dFinalSamples[deviceIdx], finalSampleSize, nextDoorData.dSampleInsertionPositions[deviceIdx],
-    //                                                                                                                                                                  nextDoorData.dCurandStates[deviceIdx], dKernelTypeForTransit[deviceIdx], dGridKernelTransits[deviceIdx], *gridKernelTransitsNum[deviceIdx], threadBlocks, fanouts[step], finalSampleSizeTillPreviousStep, d_fanouts, (int)tot_step, out_rows, out_cols, out_idxs);
-    //             break;
-    //           default:
-    //             // TODO: Add others
-    //             break;
-    //           }
-    //           CHK_CU(cudaGetLastError());
-    //           // }
-    //         }
-    //       }
-    //       CUDA_SYNC_DEVICE_ALL(nextDoorData);
-    //     }
-    //   }
-    // }
 
     if (step != tot_step - 1)
     {
       // add src nodes into dst
-      if (CCGApp().samplingType() == SamplingType::NeighborSampling)
+      if (CCGApp().samplingType() == SamplingType::NeighborSampling && addsrc)
       {
         for (size_t deviceIdx = 0; deviceIdx < nextDoorData.devices.size(); deviceIdx++)
         {
@@ -2253,7 +2326,7 @@ void doTransitParallelSampling(NextDoorData &nextDoorData, const DGLContext &ctx
           device->CopyDataFromTo(nextDoorData.dTransitToSampleMapKeys[deviceIdx], 0, nextDoorData.dSamplesToTransitMapValues[deviceIdx], totEdgesToSampleAtStep * sizeof(VertexID_t), sizeof(VertexID_t) * totNeighborsToSampleAtStep, ctx, ctx, DGLDataType{kDGLInt, 64, 1});
           // CHK_CU(cudaMemcpy(nextDoorData.dSamplesToTransitMapKeys[deviceIdx]+totEdgesToSampleAtStep, nextDoorData.dTransitToSampleMapValues[deviceIdx], sizeof(VertexID_t) * totNeighborsToSampleAtStep, cudaMemcpyDeviceToDevice));
           // CHK_CU(cudaMemcpy(nextDoorData.dSamplesToTransitMapValues[deviceIdx]+totEdgesToSampleAtStep, nextDoorData.dTransitToSampleMapKeys[deviceIdx], sizeof(VertexID_t) * totNeighborsToSampleAtStep, cudaMemcpyDeviceToDevice));
-          numTransits = totNeighborsToSampleAtStep + totEdgesToSampleAtStep;
+          totEdgesToSampleAtStep = totNeighborsToSampleAtStep + totEdgesToSampleAtStep;
         }
       }
 
@@ -2268,7 +2341,7 @@ void doTransitParallelSampling(NextDoorData &nextDoorData, const DGLContext &ctx
         CUDA_CALL(cub::DeviceRadixSort::SortPairs(d_temp_storage[deviceIdx], temp_storage_bytes[deviceIdx],
                                         nextDoorData.dSamplesToTransitMapValues[deviceIdx], nextDoorData.dTransitToSampleMapKeys[deviceIdx],
                                         nextDoorData.dSamplesToTransitMapKeys[deviceIdx], nextDoorData.dTransitToSampleMapValues[deviceIdx],
-                                        numTransits, 0, nextDoorData.maxBits));
+                                        totEdgesToSampleAtStep, 0, nextDoorData.maxBits));
         // std::cout<<"\n**** totalThreads 2: "<<totalThreads[deviceIdx]<<std::endl;
         // gpuprint<<<1,1>>>(nextDoorData.dTransitToSampleMapKeys[deviceIdx], totalThreads[deviceIdx]);
         // gpuprint<<<1,1>>>(nextDoorData.dTransitToSampleMapValues[deviceIdx], totalThreads[deviceIdx]);
@@ -2278,70 +2351,68 @@ void doTransitParallelSampling(NextDoorData &nextDoorData, const DGLContext &ctx
       // CUDA_SYNC_DEVICE_ALL(nextDoorData);
       
       // get unique tranist for next step
-      if (CCGApp().samplingType() == SamplingType::NeighborSampling)
+      if (CCGApp().samplingType() == SamplingType::NeighborSampling && uniqueseeds)
       {
         for (size_t deviceIdx = 0; deviceIdx < nextDoorData.devices.size(); deviceIdx++)
         {
           CUDA_CALL(cub::DeviceSelect::UniqueByKey(d_unique_temp_storage[deviceIdx], unique_temp_storage_bytes[deviceIdx],
                                       nextDoorData.dTransitToSampleMapKeys[deviceIdx], nextDoorData.dTransitToSampleMapValues[deviceIdx],
                                       nextDoorData.dTransitToSampleMapKeys[deviceIdx], nextDoorData.dTransitToSampleMapValues[deviceIdx],
-                                      d_num_selected_out[deviceIdx], numTransits));
-          // CHK_CU(cudaGetLastError());
-          device->StreamSync(ctx, stream);
-          device->CopyDataFromTo(d_num_selected_out[deviceIdx], 0, &totNeighborsToSampleAtStep, 0, sizeof(VertexID_t), ctx, DGLContext{kDGLCPU, 0}, DGLDataType{kDGLInt, 64, 1});
-          // CHK_CU(cudaMemcpy(&totNeighborsToSampleAtStep, d_num_selected_out[deviceIdx], sizeof(VertexID_t), cudaMemcpyDeviceToHost));
-          // std::cout<<"\n**** num_selected_out: "<<totNeighborsToSampleAtStep<<std::endl<<"TransitToSampleMapKeys:\n";
-          // gpuprint<<<1,1>>>(nextDoorData.dTransitToSampleMapKeys[deviceIdx], totNeighborsToSampleAtStep);
-          // cudaDeviceSynchronize();
-          // std::cout<<"TransitToSampleMapValues:\n";
-          // gpuprint<<<1,1>>>(nextDoorData.dTransitToSampleMapValues[deviceIdx], totNeighborsToSampleAtStep);
-          // cudaDeviceSynchronize();
+                                      d_num_selected_out[deviceIdx], totEdgesToSampleAtStep));
+          device->CopyDataFromTo(d_num_selected_out[deviceIdx], 0, &totEdgesToSampleAtStep, 0, sizeof(VertexID_t), ctx, DGLContext{kDGLCPU, 0}, DGLDataType{kDGLInt, 64, 1});
+          // std::cout<<"\n**** num_selected_out: "<<totEdgesToSampleAtStep<<std::endl<<"TransitToSampleMap:\n";
         }
         // CUDA_SYNC_DEVICE_ALL(nextDoorData);
       }
+      totNeighborsToSampleAtStep = totEdgesToSampleAtStep;
+
+      // std::cout<<"\n**** end step " << step << ", totEdgesToSampleAtStep: "<<totEdgesToSampleAtStep<<std::endl;
+      // std::cout<<" TransitToSample: "<<std::endl;
+      // gpuprint<<<1,1>>>(nextDoorData.dTransitToSampleMapKeys[0], totEdgesToSampleAtStep);
+      // device->StreamSync(ctx, stream);
+      // gpuprint<<<1,1>>>(nextDoorData.dTransitToSampleMapValues[0], totEdgesToSampleAtStep);
+      // device->StreamSync(ctx, stream);
+      // std::cout<<" SamplesToTransitMap: "<<std::endl;
+      // gpuprint<<<1,1>>>(nextDoorData.dSamplesToTransitMapKeys[0], totEdgesToSampleAtStep);
+      // device->StreamSync(ctx, stream);
+      // gpuprint<<<1,1>>>(nextDoorData.dSamplesToTransitMapValues[0], totEdgesToSampleAtStep);
+      // device->StreamSync(ctx, stream);
     }
 
     CCGApp().procStepSample();
 
-    // std::cout<<"\n**** step " << step << ", totalThreads: "<<totalThreads[0]<<std::endl;
-    // gpuprint<<<1,1>>>(nextDoorData.dTransitToSampleMapKeys[0], totalThreads[0]);
-    // device->StreamSync(ctx, stream);
-    // gpuprint<<<1,1>>>(nextDoorData.dTransitToSampleMapValues[0], totalThreads[0]);
-    // device->StreamSync(ctx, stream);
-
-    // std::cout << "CCGSample COO Matrix: length: " << num_edges << std::endl;
-    // gpuprint<<<1,1>>>(picked_row_data, num_edges);
-    // cudaDeviceSynchronize();
-    // gpuprint<<<1,1>>>(picked_col_data, num_edges);
-    // cudaDeviceSynchronize();
-    // gpuprint<<<1,1>>>(picked_idx_data, num_edges);
-    // cudaDeviceSynchronize();
-    // device->StreamSync(ctx, stream);
+    // if (CCGApp().samplingType() == SamplingType::NeighborSampling)
+    // {
+      // std::cout << "end step. CCGSample COO Matrix: length: " << spl_len << std::endl;
+      // gpuck<<<1,1>>>((VertexID_t *)picked_row->data, (VertexID_t *)picked_col->data, (VertexID_t *)picked_idx->data, spl_len, 4846609, 85702474);
+      // device->StreamSync(ctx, stream);
+      // gpuprint<<<1,1>>>((VertexID_t *)picked_row->data, spl_len);
+      // device->StreamSync(ctx, stream);
+      // gpuprint<<<1,1>>>((VertexID_t *)picked_col->data, spl_len);
+      // device->StreamSync(ctx, stream);
+      // gpuprint<<<1,1>>>((VertexID_t *)picked_idx->data, spl_len);
+      // device->StreamSync(ctx, stream);
+    // }
   }
   // _outt = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch());
   // std::cout << "[PF] ed step_sample " << std::fixed << std::setprecision(7) << (double)(_outt.count() * 0.000001) << "\n";
 
+  device->FreeWorkspace(ctx, d_fanouts);
   for (size_t deviceIdx = 0; deviceIdx < nextDoorData.devices.size(); deviceIdx++)
-  {
-    // auto device = nextDoorData.devices[deviceIdx];
+  {    
     device->FreeWorkspace(ctx, d_temp_storage[deviceIdx]);
     device->FreeWorkspace(ctx, d_unique_temp_storage[deviceIdx]);
     device->FreeWorkspace(ctx, d_num_selected_out[deviceIdx]);
-    device->FreeWorkspace(ctx, d_fanouts);
-    // CHK_CU(cudaFree(d_temp_storage[deviceIdx]));
-    // CHK_CU(cudaFree(d_unique_temp_storage[deviceIdx]));
-    // CHK_CU(cudaFree(dUniqueTransits[deviceIdx]));
-    // CHK_CU(cudaFree(dUniqueTransitsCounts[deviceIdx]));
-    // CHK_CU(cudaFree(dUniqueTransitsNumRuns[deviceIdx]));
-    // CHK_CU(cudaFree(dKernelTypeForTransit[deviceIdx]));
-    // CHK_CU(cudaFree(dTransitPositions[deviceIdx]));
-    // CHK_CU(cudaFree(dGridKernelTransits[deviceIdx]));
-    // CHK_CU(cudaFree(dThreadBlockKernelTransits[deviceIdx]));
-    // CHK_CU(cudaFree(dSubWarpKernelTransits[deviceIdx]));
-    // CHK_CU(cudaFree(dKernelTransitNums[deviceIdx]));
+    device->FreeWorkspace(ctx, dUniqueTransits[deviceIdx]);
+    device->FreeWorkspace(ctx, dUniqueTransitsCounts[deviceIdx]);
+    device->FreeWorkspace(ctx, dUniqueTransitsNumRuns[deviceIdx]);
+    device->FreeWorkspace(ctx, dKernelTypeForTransit[deviceIdx]);
+    device->FreeWorkspace(ctx, dTransitPositions[deviceIdx]);
+    device->FreeWorkspace(ctx, dGridKernelTransits[deviceIdx]);
+    if (useThreadBlockKernel) device->FreeWorkspace(ctx, dThreadBlockKernelTransits[deviceIdx]);
+    if (useSubWarpKernel) device->FreeWorkspace(ctx, dSubWarpKernelTransits[deviceIdx]);
+    device->FreeWorkspace(ctx, dKernelTransitNums[deviceIdx]);
   }
-
-  // CHK_CU(cudaFree(d_fanouts));
   return;
 }
 
@@ -2391,16 +2462,16 @@ void setNextDoorData(NextDoorData *data, void *gpu_ccg, void *crs)
     // data->gpuBCGPartitions.push_back(gb);
 
     data->maxThreadsPerKernel[device] = CCGCurandNum;
-    data->dCurandStates[device] = (curandState_t *)crs;
+    data->dCurandStates[device] = (curandState *)crs;
   }
   return;
 }
 
-std::vector<dgl::aten::COOMatrix> CCGSampleNeighbors(uint64_t n_nodes, void *gpu_ccg, void *crs, NextDoorData *nextDoorData, IdArray &seed_nodes_arr, const std::vector<int64_t> &fanouts)
+std::vector<dgl::aten::COOMatrix> CCGSampleNeighbors(uint64_t n_nodes, void *gpu_ccg, void *crs, NextDoorData *nextDoorData, IdArray &seed_nodes_arr, const std::vector<int64_t> &fanouts, bool loadBalacing = true)
 {
   const auto& ctx = seed_nodes_arr->ctx;
   auto device = runtime::DeviceAPI::Get(ctx);
-  CCGNeighborApp().init(fanouts, ctx);
+  CCGNeighborApp().init(n_nodes, fanouts, ctx);
 
   // size_t free, free1, tot;
   // CUDA_CALL(cudaMemGetInfo(&free, &tot));
@@ -2417,16 +2488,20 @@ std::vector<dgl::aten::COOMatrix> CCGSampleNeighbors(uint64_t n_nodes, void *gpu
 
   // _outt = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch());
   // std::cout << "[PF] bg cu_dospl " << std::fixed << std::setprecision(7) << (double)(_outt.count() * 0.000001) << "\n";
-
-  doTransitParallelSampling<CCGNeighborApp>(*nextDoorData, ctx);
-
+  // printf("seeds number: %ld\n", seed_nodes_arr.NumElements());
+  doTransitParallelSampling<CCGNeighborApp>(*nextDoorData, ctx, loadBalacing);
   // CUDA_CALL(cudaMemGetInfo(&free1, &tot));
   // std::cout << "[PF] stat CCGSampleNeighbors "<< (free-free1)/1024/1024 << std::endl;
   // _outt = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch());
   // std::cout << "[PF] ed cu_dospl " << std::fixed << std::setprecision(7) << (double)(_outt.count() * 0.000001) << "\n";
-
+  // for(int i=0;i<vecCOO.size();i++) {
+  //   std::cout<<i<<" "<<vecCOO[i].row.use_count()<<std::endl;
+  //   ret[i] = std::move(vecCOO[i]);
+  // }
   // freeDeviceData(nextDoorData);
-  return vecCOO;
+  // const DGLDataType& dtype = DGLDataType{kDGLInt, 64, 1};
+  // return std::vector<dgl::aten::COOMatrix>(fanouts.size(), dgl::aten::COOMatrix(0, 0, aten::NullArray(dtype, ctx), aten::NullArray(dtype, ctx)));
+  return std::move(vecCOO);
 }
 
 
@@ -2434,7 +2509,7 @@ std::vector<dgl::aten::COOMatrix> CCGSampleNeighbors(uint64_t n_nodes, void *gpu
 // Random walk sampling
 ////////////////////////////////
 
-IdArray CCGRandomWalk(uint64_t n_nodes, void *gpu_ccg, NextDoorData *nextDoorData, IdArray seeds, int64_t length)
+IdArray CCGRandomWalk(uint64_t n_nodes, void *gpu_ccg, NextDoorData *nextDoorData, IdArray seeds, int64_t length, bool loadBalacing = true)
 {
   const auto& ctx = seeds->ctx;
   auto device = runtime::DeviceAPI::Get(ctx);
@@ -2442,12 +2517,13 @@ IdArray CCGRandomWalk(uint64_t n_nodes, void *gpu_ccg, NextDoorData *nextDoorDat
 
   // std::cout<<ctx.device_type<<" "<<kDGLCUDA<<std::endl;
   
-  CCGRandomWalkApp().init(seeds, length, ctx);
+  CCGRandomWalkApp().init(n_nodes, seeds, length, ctx);
   setFristNode<<<utils::thread_block_size((unsigned long)seeds.NumElements(), 256UL), 256UL>>>(out_trace, seeds.Ptr<VertexID_t>(), trace_length);
   initializeNextDoorSample<CCGRandomWalkApp>(*nextDoorData, seeds, (int)trace_length - 1);
   // std::cout<< "seeds size: " << seeds.NumElements() << " trace length: " << trace_length << std::endl;
-  doTransitParallelSampling<CCGRandomWalkApp>(*nextDoorData, ctx);
-  return traces;
+  doTransitParallelSampling<CCGRandomWalkApp>(*nextDoorData, ctx, loadBalacing);
+  // std::cout<<"use count: " << traces.use_count() << std::endl;
+  return std::move(traces);
 }
 
 

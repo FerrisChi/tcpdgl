@@ -12,6 +12,10 @@
 #include <tuple>
 #include <utility>
 
+#include <dgl/runtime/ndarray.h>
+#include <dgl/runtime/device_api.h>
+#include <dgl/runtime/c_runtime_api.h>
+
 #include "../../../c_api_common.h"
 #include "../../unit_graph.h"
 #include "../../serialize/graph_serialize.h"
@@ -577,13 +581,17 @@ DGL_REGISTER_GLOBAL("sampling.neighbor._CAPI_CCGSampleNeighbors")
     dgl::serialize::CCGData g = args[0];
     IdArray seed_nodes = args[1];
     IdArray fanouts_array = args[2];
+    bool loadBalancing = args[3];
     const auto& fanouts = fanouts_array.ToVector<int64_t>();
     // const IdArray &fanouts = args[2];
     // const auto& _fanouts = fanouts_arr.ToVector<int64_t>();
 
     // auto _outt = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()); // nanoseconds
     // std::cout << "[PF] bg cpp_sample.ccgspl " << std::fixed << std::setprecision(7) << (double)(_outt.count() * 0.000001) << "\n";
-    std::vector<COOMatrix> sampled_coos = dgl::tcpdgl::CCGSampleNeighbors(g->n_nodes, g->gpu_ccg, g->curand_states, g->nextDoorData, seed_nodes, fanouts);
+    std::vector<COOMatrix> sampled_coos = dgl::tcpdgl::CCGSampleNeighbors(g->n_nodes, g->gpu_ccg, g->curand_states, g->nextDoorData, seed_nodes, fanouts, loadBalancing);
+    auto ctx = seed_nodes->ctx;
+    auto dtype = seed_nodes->dtype;
+    // std::vector<COOMatrix> sampled_coos(fanouts.size(), COOMatrix(0, 0, NullArray(dtype, ctx), NullArray(dtype, ctx), NullArray(dtype, ctx)));
     // _outt = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch());
     // std::cout << "[PF] ed cpp_sample.ccgspl " << std::fixed << std::setprecision(7) << (double)(_outt.count() * 0.000001) << "\n";
     auto createmg = []{

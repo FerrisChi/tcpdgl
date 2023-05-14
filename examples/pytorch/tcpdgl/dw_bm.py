@@ -4,7 +4,7 @@ import random
 import time
 
 import dgl
-
+from dgl.utils import pflogger
 import numpy as np
 import torch
 import torch.multiprocessing as mp
@@ -29,9 +29,10 @@ class DeepwalkTrainer:
             negative=args.negative,
             gpus=args.gpus,
             fast_neg=args.fast_neg,
-            ogbl_name=args.ogbl_name,
+            graph_name=args.graph_name,
             load_from_ogbl=args.load_from_ogbl,
-            load_ccg=args.load_ccg
+            load_ccg=args.load_ccg,
+            load_balance=args.load_balance
         )
         self.emb_size = self.dataset.G.num_nodes()
         self.emb_model = None
@@ -86,114 +87,9 @@ class DeepwalkTrainer:
     def train(self):
         """train the embedding"""
         if len(self.args.gpus) > 1:
-            self.fast_train_mp()
+            raise ValueError("Only 1 gpu.")
         else:
             self.fast_train()
-
-    def fast_train_mp(self):
-        """multi-cpu-core or mix cpu & multi-gpu"""
-        self.init_device_emb()
-        self.emb_model.share_memory()
-
-        if self.args.count_params:
-            sum_up_params(self.emb_model)
-
-        start_all = time.time()
-        ps = []
-
-        for i in range(len(self.args.gpus)):
-            p = mp.Process(
-                target=self.fast_train_sp, args=(i, self.args.gpus[i])
-            )
-            ps.append(p)
-            p.start()
-
-        for p in ps:
-            p.join()
-
-        print("Used time: %.2fs" % (time.time() - start_all))
-        if self.args.save_in_txt:
-            self.emb_model.save_embedding_txt(
-                self.dataset, self.args.output_emb_file
-            )
-        elif self.args.save_in_pt:
-            self.emb_model.save_embedding_pt(
-                self.dataset, self.args.output_emb_file
-            )
-        else:
-            self.emb_model.save_embedding(
-                self.dataset, self.args.output_emb_file
-            )
-
-    def fast_train_sp(self, rank, gpu_id):
-        """a subprocess for fast_train_mp"""
-        if self.args.mix:
-            self.emb_model.set_device(gpu_id)
-
-        torch.set_num_threads(self.args.num_threads)
-        if self.args.async_update:
-            self.emb_model.create_async_update()
-
-        sampler = self.dataset.create_sampler(rank)
-
-        dataloader = DataLoader(
-            dataset=sampler.seeds,
-            batch_size=self.args.batch_size, # 1个batch中多少个walk数
-            collate_fn=sampler.sample, # seed -> walks
-            shuffle=False,
-            drop_last=False,
-            num_workers=self.args.num_sampler_threads,
-        )
-        num_batches = len(dataloader)
-        print(
-            "num batchs: %d in process [%d] GPU [%d]"
-            % (num_batches, rank, gpu_id)
-        )
-        # number of positive node pairs in a sequence
-        num_pos = int(
-            2 * self.args.walk_length * self.args.window_size
-            - self.args.window_size * (self.args.window_size + 1)
-        )
-
-        start = time.time()
-        with torch.no_grad():
-            for i, walks in enumerate(dataloader):
-                if self.args.fast_neg:
-                    self.emb_model.fast_learn(walks)
-                else:
-                    # do negative sampling
-                    bs = len(walks)
-                    neg_nodes = torch.LongTensor(
-                        np.random.choice(
-                            self.dataset.neg_table,
-                            bs * num_pos * self.args.negative,
-                            replace=True,
-                        )
-                    )
-                    self.emb_model.fast_learn(walks, neg_nodes=neg_nodes)
-
-                if i > 0 and i % self.args.print_interval == 0:
-                    if self.args.print_loss:
-                        print(
-                            "GPU-[%d] batch %d time: %.2fs loss: %.4f"
-                            % (
-                                gpu_id,
-                                i,
-                                time.time() - start,
-                                -sum(self.emb_model.loss)
-                                / self.args.print_interval,
-                            )
-                        )
-                        self.emb_model.loss = []
-                    else:
-                        print(
-                            "GPU-[%d] batch %d time: %.2fs"
-                            % (gpu_id, i, time.time() - start)
-                        )
-                    start = time.time()
-
-            if self.args.async_update:
-                self.emb_model.finish_async_update()
 
     def fast_train(self):
         """fast train with dataloader with only gpu / only cpu"""
@@ -231,7 +127,9 @@ class DeepwalkTrainer:
         start = time.time()
         with torch.no_grad():
             max_i = num_batches
+            pflogger.info('bg epoch %f', time.time())
             for i, walks in enumerate(dataloader):
+                pflogger.info('bg model_compution %f', time.time())
                 if self.args.fast_neg:
                     self.emb_model.fast_learn(walks)
                 else:
@@ -246,27 +144,30 @@ class DeepwalkTrainer:
                     )
                     self.emb_model.fast_learn(walks, neg_nodes=neg_nodes)
 
-                if i > 0 and i % self.args.print_interval == 0:
-                    if self.args.print_loss:
-                        print(
-                            "Batch %d training time: %.2fs loss: %.4f"
-                            % (
-                                i,
-                                time.time() - start,
-                                -sum(self.emb_model.loss)
-                                / self.args.print_interval,
-                            )
-                        )
-                        self.emb_model.loss = []
-                    else:
-                        print(
-                            "Batch %d, training time: %.2fs"
-                            % (i, time.time() - start)
-                        )
-                    start = time.time()
+                pflogger.info('ed model_compution %f', time.time())
+
+                # if i > 0 and i % self.args.print_interval == 0:
+                #     if self.args.print_loss:
+                #         print(
+                #             "Batch %d training time: %.2fs loss: %.4f"
+                #             % (
+                #                 i,
+                #                 time.time() - start,
+                #                 -sum(self.emb_model.loss)
+                #                 / self.args.print_interval,
+                #             )
+                #         )
+                #         self.emb_model.loss = []
+                #     else:
+                #         print(
+                #             "Batch %d, training time: %.2fs"
+                #             % (i, time.time() - start)
+                #         )
+                #     start = time.time()
 
             if self.args.async_update:
                 self.emb_model.finish_async_update()
+            pflogger.info('ed epoch %f', time.time())
 
         print("Training used time: %.2fs" % (time.time() - start_all))
         if self.args.save_in_txt:
@@ -287,7 +188,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="DeepWalk")
     # input files
     ## personal datasets
-    data_path = '/mnt/data2/chijj/data/'
     parser.add_argument(
         "--data_file",
         type=str,
@@ -296,19 +196,25 @@ if __name__ == "__main__":
     )
     ## ogbl datasets
     parser.add_argument(
-        "--ogbl_name", type=str,default='ogbl-ddi', help="name of ogbl dataset, e.g. ogbl-ddi"
+        "--graph_name", type=str,default='ogbl-ppa', help="name of ogbl dataset, e.g. ogbl-ddi"
     )
     parser.add_argument(
         "--load_from_ogbl",
-        default=True,
+        default=False,
         action="store_true",
         help="whether load dataset from ogbl",
     )
     parser.add_argument(
         "--load_ccg",
-        default=True,
+        default=False,
         action="store_true",
         help="whether load ccg graph"
+    )
+    parser.add_argument(
+        "--cnt",
+        type=int,
+        default=-1,
+        help="number of experiments"
     )
 
     # output files
@@ -369,8 +275,14 @@ if __name__ == "__main__":
         help="negative samples for each positve node pair",
     )
     parser.add_argument(
+        "--load_balance",
+        action="store_true",
+        default=False,
+        help="whether to use load balance strategy for sampling",
+    )
+    parser.add_argument(
         "--batch_size",
-        default=128,
+        default=4048, # 128
         type=int,
         help="number of node sequences in each batch",
     )
@@ -468,6 +380,12 @@ if __name__ == "__main__":
         action="store_true",
         help="count the params, exit once counting over",
     )
+    parser.add_argument(
+        "--log_path",
+        default="",
+        type=str,
+        help="path to log"
+    )
 
     args = parser.parse_args()
     print(args)
@@ -478,5 +396,7 @@ if __name__ == "__main__":
 
     start_time = time.time()
     trainer = DeepwalkTrainer(args)
+    pflogger.info('bg end2end %f', time.time())
     trainer.train()
+    pflogger.info('ed end2end %f', time.time())
     print("Total used time: %.2f" % (time.time() - start_time))

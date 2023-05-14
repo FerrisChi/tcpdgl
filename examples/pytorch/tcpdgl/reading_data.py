@@ -146,10 +146,11 @@ class DeepwalkDataset:
         negative=5,
         gpus=[0],
         fast_neg=True,
-        ogbl_name="",
+        graph_name="",
         load_from_ogbl=False,
         load_ccg=False,
         device=None,
+        load_balance=False
     ):
         """This class has the following functions:
         1. Transform the txt network file into DGL graph;
@@ -176,6 +177,7 @@ class DeepwalkDataset:
         self.fast_neg = fast_neg
         self.load_ccg = load_ccg
         self.device = device
+        self.load_balance = load_balance
         
         if load_from_ogbl:
             assert (
@@ -183,16 +185,25 @@ class DeepwalkDataset:
             ), "ogb.linkproppred is not compatible with multi-gpu training (CUDA error)."
             
             from load_dataset import load_from_ogbl_with_name
-            self.G = load_from_ogbl_with_name(ogbl_name, load_ccg)
+            self.G = load_from_ogbl_with_name(graph_name, load_ccg)
 
             # make_undirected
             if not load_ccg:
                 self.G.add_edges(self.G.edges()[1], self.G.edges()[0])
         else:
-            raise ValueError('Do not support dataset apart from ogbl.')
-            self.net, self.node2id, self.id2node, self.sm = ReadTxtNet(net_file)
-            self.save_mapping(map_file)
-            self.G = net2graph(self.sm)
+            if load_ccg:
+                from load_dataset import CCGDataset
+                data_path = "/mnt/data2/chijj/data"
+                ccg_name = "tc1_k32_h2"
+                graph_path = os.path.join(data_path, graph_name, ccg_name)
+                self.G = CCGDataset(graph_name, ccg_name, graph_path, None, data_path)[0]
+            else:
+                from load_dataset import LoadDataset
+                self.G, _, _, _, _ = LoadDataset(graph_name, 10)
+            # raise ValueError('Do not support dataset apart from ogbl.')
+            # self.net, self.node2id, self.id2node, self.sm = ReadTxtNet(net_file)
+            # self.save_mapping(map_file)
+            # self.G = net2graph(self.sm)
 
         self.G = self.G.to('cuda:0')
         self.num_nodes = self.G.num_nodes()
@@ -234,33 +245,9 @@ class DeepwalkDataset:
 
     def create_sampler(self, i):
         """create random walk sampler"""
-        return DeepwalkSampler(self.G, self.seeds[i], self.batch_size, self.walk_length, self.load_ccg, self.device)
+        return DeepwalkSampler(self.G, self.seeds[i], self.batch_size, self.walk_length, self.load_ccg, self.device, load_balacing=self.load_balance)
 
     def save_mapping(self, map_file):
         """save the mapping dict that maps node IDs to embedding indices"""
         with open(map_file, "wb") as f:
             pickle.dump(self.node2id, f)
-
-
-# class DeepwalkSampler(object):
-#     def __init__(self, G, seeds, batch_size, walk_length, ccg_sample):
-#         """random walk sampler
-
-#         Parameter
-#         ---------
-#         G dgl.Graph : the input graph
-#         seeds torch.LongTensor : starting nodes
-#         walk_length int : walk length
-#         """
-#         self.G = G
-#         self.seeds = seeds
-#         self.batch_size = batch_size
-#         self.walk_length = walk_length
-#         self.ccg_sampe = ccg_sample
-
-#     def sample(self, seeds):
-#         if self.ccg_sampe:
-#             walks = ccg_random_walk(self.G.ccg, seeds, length=self.walk_length - 1)[0]
-#         else:
-#             walks = random_walk(self.G, seeds, length=self.walk_length - 1)[0]
-#         return walks

@@ -52,6 +52,7 @@ public:
         }
     }
 
+    // append fix-length code x(length = max_bit) to bit_array
     void append_bit(bits &bit_array, size_type x, int max_bit) {
         assert(x >= 0);
         auto bit_cnt = get_bit_num(x);
@@ -67,6 +68,7 @@ public:
         return;
     }
 
+    // get significent bit position of x
     int get_significent_bit(size_type x) {
         assert(x > 0);
         int ret = 0;
@@ -101,7 +103,9 @@ public:
         size_type node;
         size_type outd;
         size_type data_len;
-        int h, k, ppos;
+        int h, k;
+        // first positive position
+        int ppos;
         bits len_arr, data_arr;
 
         size_type bit_cnt[10];
@@ -198,9 +202,11 @@ public:
                     sum += layer_num;
                     ++h;
                 }
+                // binary search suitable k
                 int left = 1, right = T_k;
                 while (left < right) {
                     auto x = (left + right) >> 1;
+                    // k+k^2+...+k^h = k(k^h-1)/(k-1)
                     if (pow(x, h + 1) - x >= outd * (x - 1)) right = x; // < outd
                     else left = x + 1;
                 }
@@ -222,9 +228,11 @@ public:
             return;
         }
 
+        // sub_len: size without last layer nodes
+        // leaf_len: maximum possible leaves
         void dfs(int cur_h, size_type x, size_type sub_len, size_type leaf_len, std::list<size_type> neighbors) {
             // std::cout << x << ' ' << cur_h << std::endl;
-            auto tot_len = neighbors.size();            
+            auto tot_len = neighbors.size();
             if (tot_len <= k) {
                 for (auto i : neighbors) lc.push(cur_h, abs(i - x) - 1);
                 if (cur_h == 1) {
@@ -240,6 +248,7 @@ public:
             auto iter = neighbors.begin();
             for (int i = 0; i < k; ++i) {
                 auto iter_s = iter;
+                // subtree size
                 auto len = sub_len + std::min(res_len, leaf_len);
                 size_type cur;
                 size_type x_pos;
@@ -247,6 +256,7 @@ public:
                     x_pos = (size_type)((pow(k, h - cur_h + 1) - k) / (k - 1) + h - cur_h) >> 1;
                 }
                 else x_pos = (sub_len + leaf_len) >> 1;
+                // left leaves less than half of possible leave len, make sure it has actual node
                 if (auto half_len = (leaf_len + (k & 1)) >> 1; res_len < half_len) {
                     x_pos -= half_len - res_len;
                 }

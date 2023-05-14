@@ -16,7 +16,8 @@ typedef uint64_t Offset_t;
 
 enum SamplingType {
   NeighborSampling,
-  RandomWalkSampling
+  RandomWalkSampling,
+  Collective
 };
 
 #define GRAPH_LEN 32
