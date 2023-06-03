@@ -42,12 +42,9 @@ def main():
     parser.add_argument("-g","--graph_name", type=str, default='cora', help="dataset name")
     parser.add_argument("--use_uva", action='store_true', default=False, help="use unified virtual space")
     parser.add_argument("--pin", action='store_true', default=False, help="pin graph features")
-    parser.add_argument("--lr", type=float, default=1e-3,
-                        help="learning rate")
-    parser.add_argument("-e", "--n_epoch", type=int, default=10,
-                        help="number of training epochs")
-    parser.add_argument("-f", "--n_feat", type=int, default=10,
-                        help="number of features")
+    parser.add_argument("--lr", type=float, default=1e-3, help="learning rate")
+    parser.add_argument("-e", "--n_epoch", type=int, default=10, help="number of training epochs")
+    parser.add_argument("-f", "--n_feat", type=int, default=10, help="number of features")
     parser.add_argument("-s", "--sampler",type=str, default="sage", choices=["sage", "labor"], help="graph sampler")
     parser.add_argument("--cnt", type=int, default=-1, help="number of experiments")
     parser.add_argument("--load_balance", action='store_true', default=False, help="load balance")
@@ -116,9 +113,6 @@ def main():
         pflogger.info('bg epoch %f', time.time())
         for it, (input_nodes, output_nodes, blocks) in enumerate(train_dataloader):
             for bid, block in enumerate(blocks):
-                # print('[PF] stat batch_{}_block_{}.src'.format(it, bid), block.number_of_src_nodes())
-                # print('[PF] stat batch_{}_block_{}.dst'.format(it, bid), block.number_of_dst_nodes())
-                # print('[PF] stat batch_{}_block_{}.edges'.format(it, bid), block.number_of_edges())
                 pflogger.info(f'stat block{bid}.src_nodes {block.number_of_src_nodes()}')
                 pflogger.info(f'stat block{bid}.dst_nodes {block.number_of_dst_nodes()}')
                 pflogger.info(f'stat block{bid}.edges {block.number_of_edges()}')
@@ -134,7 +128,7 @@ def main():
             total_loss += loss.item()
             pflogger.info('ed model_compution %f', time.time())
         
-        if epoch % 5 == 0 or epoch == args.n_epoch - 1:
+        if (epoch % 5 == 0 or epoch == args.n_epoch - 1) and args.eval:
             acc = evaluate(model, graph, val_dataloader, num_classes)
             pflogger.info(f'stat Loss_{epoch} {total_loss / (it + 1)}')
             pflogger.info('stat Acc_{:d} {:.4f}'.format(epoch, acc.item()))
@@ -148,12 +142,13 @@ def main():
     pflogger.info('ed end2end %f', time.time())
     pflogger.info('stat max_mem_used %d', torch.cuda.max_memory_allocated()/1024/1024)
     
-    print('Testing...')
-    acc = layerwise_infer(
-        device, graph, test_idx, model, num_classes, batch_size=4096
-    )
-    pflogger.info('stat Test_Acc %f', acc.item())
-    # print("Test Accuracy {:.4f}".format(acc.item()))
+    if args.eval:
+        print('Testing...')
+        acc = layerwise_infer(
+            device, graph, test_idx, model, num_classes, batch_size=4096
+        )
+        pflogger.info('stat Test_Acc %f', acc.item())
+        # print("Test Accuracy {:.4f}".format(acc.item()))
 
     pflogger.info('stop %f', time.time())
     print('end')

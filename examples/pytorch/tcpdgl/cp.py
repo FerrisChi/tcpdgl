@@ -150,7 +150,7 @@ def main():
             pflogger.info('ed model_compution %f', time.time())
             # input('finish calc')
 
-        if epoch % 5 == 0 or epoch == args.n_epoch - 1:
+        if (epoch % 5 == 0 or epoch == args.n_epoch - 1) and args.eval:
             acc = evaluate(model, graph, val_dataloader, dataset.num_classes)
             pflogger.info(f'stat Loss_{epoch} {total_loss / (it + 1)}')
             pflogger.info(f'stat Acc_{epoch} {acc.item()}')
@@ -159,11 +159,12 @@ def main():
     pflogger.info('ed end2end %f', time.time())
     pflogger.info('stat max_mem_used %d', torch.cuda.max_memory_allocated()/1024/1024)
 
-    print('Testing...')
-    acc = layerwise_infer(
-        device, graph, test_idx, model, dataset.num_classes, batch_size=4096
-    )
-    pflogger.info('stat Test_Acc %f', acc.item())
+    if args.eval:
+        print('Testing...')
+        acc = layerwise_infer(
+            device, graph, test_idx, model, dataset.num_classes, batch_size=4096
+        )
+        pflogger.info('stat Test_Acc %f', acc.item())
 
     pflogger.info('stop %f', time.time())
     print('end')

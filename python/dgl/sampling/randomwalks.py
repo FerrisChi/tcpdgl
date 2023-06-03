@@ -208,6 +208,7 @@ def random_walk(
             p_nd.append(prob_nd)
 
     # Actual random walk
+    nodes.ctx.sync()
     if not dist.is_initialized() or dist.get_rank() == 0:
         pflogger.info('bg sample.capi %f', time.time())
     if restart_prob is None:
@@ -225,7 +226,7 @@ def random_walk(
         )
     else:
         raise TypeError("restart_prob should be float or Tensor.")
-    
+    nodes.ctx.sync()
     if not dist.is_initialized() or dist.get_rank() == 0:
         pflogger.info('ed sample.capi %f', time.time())
 
@@ -286,6 +287,7 @@ def ccg_random_walk(
     if return_eids:
         raise ValueError('Do not support argc: return_eids.')
 
+    nodes.ctx.sync()
     if not dist.is_initialized() or dist.get_rank() == 0:
         pflogger.info('bg sample.capi %f', time.time())
     # Actual random walk
@@ -304,9 +306,14 @@ def ccg_random_walk(
         )
     else:
         raise TypeError("restart_prob should be float or Tensor.")
+    nodes.ctx.sync()
     if not dist.is_initialized() or dist.get_rank() == 0:
         pflogger.info('ed sample.capi %f', time.time())
     traces = F.from_dgl_nd(traces)
+
+    # nodes = F.from_dgl_nd(nodes)
+    # traces[:,0] = nodes
+    
     types = []
     return (traces, types)
 

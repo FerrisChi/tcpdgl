@@ -30,6 +30,11 @@ class CCGDataset(DGLDataset):
         super().__init__(name=_ccg_name)
     
     def read_dgl_graph(self):
+        # csv_path = os.path.join('/mnt/data2/chijj/data', self.graph_name, 'un_sort')
+        # df = pandas.read_csv(csv_path , header=None, names=["Src", "Dst"], sep=' ')
+        # src = df["Src"].to_numpy()
+        # dst = df["Dst"].to_numpy()
+        # return dgl.graph((src, dst), idtype=torch.int64)
         return dgl.graph(([],[]))
 
     def process(self):
@@ -79,18 +84,19 @@ class CCGDataset(DGLDataset):
             valid_idx = torch.tensor(idx[int(self.graph.ccg.v_num * (train_pc + test_pc)) : self.graph.ccg.v_num])
         return train_idx, test_idx, valid_idx
 
-def LoadDataset(graph_name, n_feat):
+def LoadDataset(graph_name, n_feat, force_reload = False):
     data_path = '/mnt/data2/chijj/data'
+    # data_path = '/home/chijj/tcpdgl/examples/pytorch/tcpdgl'
     dgl_data_path = os.path.join(data_path, 'dgl')
     cache_path = os.path.join(data_path, graph_name, 'dglgraph.bin')
     print(data_path)
     if graph_name == 'cora':
-        if os.path.exists(cache_path):
+        if force_reload == False and os.path.exists(cache_path):
             graph, label_dict = load_graphs(cache_path)
             graph = graph[0]
             num_classes = torch.max(graph.ndata['label']) + 1
         else:
-            dataset = CoraGraphDataset(dgl_data_path)
+            dataset = CoraGraphDataset(dgl_data_path, force_reload=force_reload)
             graph = dataset[0]
             num_classes = dataset.num_classes
         train_idx = torch.nonzero(graph.ndata['train_mask']).squeeze()
@@ -141,7 +147,6 @@ def LoadDataset(graph_name, n_feat):
             feat_lr=-10.0
             feat_rr=10.0
 
-            
             df = pandas.read_csv(file_path , header=None, names=["Src", "Dst"], sep=' ')
             src = df["Src"].to_numpy()
             dst = df["Dst"].to_numpy()

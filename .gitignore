@@ -1,6 +1,9 @@
 result/
 log/
 *.pt
+*.npy
+*.txt
+*.zip
 
 # IDE
 .idea
@@ -172,3 +175,4 @@ config.cmake
 
 # model file
 *.pth
+port.cpp

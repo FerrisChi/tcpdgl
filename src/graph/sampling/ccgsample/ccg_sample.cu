@@ -1632,9 +1632,13 @@ __global__ void gridKernel(const int step, const VertexID_t deviceFirstSample,
 }
 
 
-__global__ void setFristNode(VertexID_t* trace, VertexID_t* seeds, int length) {
+__global__ void setFristNode(VertexID_t* trace, VertexID_t* seeds, int length, int64_t seed_num) {
   VertexID_t threadId = threadIdx.x + blockDim.x * blockIdx.x;
-  trace[threadId * length] = seeds[threadId];
+  if(threadId < seed_num)
+  {
+    trace[threadId * length] = seeds[threadId];
+  }
+  return;
 }
 
 template <typename CCGApp>
@@ -2494,11 +2498,6 @@ std::vector<dgl::aten::COOMatrix> CCGSampleNeighbors(uint64_t n_nodes, void *gpu
   // std::cout << "[PF] stat CCGSampleNeighbors "<< (free-free1)/1024/1024 << std::endl;
   // _outt = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch());
   // std::cout << "[PF] ed cu_dospl " << std::fixed << std::setprecision(7) << (double)(_outt.count() * 0.000001) << "\n";
-  // for(int i=0;i<vecCOO.size();i++) {
-  //   std::cout<<i<<" "<<vecCOO[i].row.use_count()<<std::endl;
-  //   ret[i] = std::move(vecCOO[i]);
-  // }
-  // freeDeviceData(nextDoorData);
   // const DGLDataType& dtype = DGLDataType{kDGLInt, 64, 1};
   // return std::vector<dgl::aten::COOMatrix>(fanouts.size(), dgl::aten::COOMatrix(0, 0, aten::NullArray(dtype, ctx), aten::NullArray(dtype, ctx)));
   return std::move(vecCOO);
@@ -2515,14 +2514,12 @@ IdArray CCGRandomWalk(uint64_t n_nodes, void *gpu_ccg, NextDoorData *nextDoorDat
   auto device = runtime::DeviceAPI::Get(ctx);
   cudaStream_t stream = runtime::getCurrentCUDAStream();
 
-  // std::cout<<ctx.device_type<<" "<<kDGLCUDA<<std::endl;
-  
   CCGRandomWalkApp().init(n_nodes, seeds, length, ctx);
-  setFristNode<<<utils::thread_block_size((unsigned long)seeds.NumElements(), 256UL), 256UL>>>(out_trace, seeds.Ptr<VertexID_t>(), trace_length);
-  initializeNextDoorSample<CCGRandomWalkApp>(*nextDoorData, seeds, (int)trace_length - 1);
-  // std::cout<< "seeds size: " << seeds.NumElements() << " trace length: " << trace_length << std::endl;
+  int64_t seed_num = seeds.NumElements();
+  setFristNode<<<utils::thread_block_size((unsigned long)seed_num, 256UL), 256UL>>>(out_trace, seeds.Ptr<VertexID_t>(), trace_length, seed_num);
+  initializeNextDoorSample<CCGRandomWalkApp>(*nextDoorData, seeds, (int)trace_length - 1);  
+  
   doTransitParallelSampling<CCGRandomWalkApp>(*nextDoorData, ctx, loadBalacing);
-  // std::cout<<"use count: " << traces.use_count() << std::endl;
   return std::move(traces);
 }
 

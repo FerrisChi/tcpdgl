@@ -888,7 +888,7 @@ def ccg_sample_full_neighbors(g, seed_nodes, num_layers,
                          copy_ndata=True, copy_edata=True, output_device=None):
     # print(f'ccg_sample_neighbors seed_nodes: ',seed_nodes.device)
     
-    print('[PF] bg sample_neighbors', time.time())
+    # print('[PF] bg sample_neighbors', time.time())
     # print('[PF] bg seed_node_to_cuda', time.time())
     seed_nodes = seed_nodes.to('cuda:0')
     # print('[PF] ed seed_node_to_cuda', time.time())
@@ -904,12 +904,12 @@ def ccg_sample_full_neighbors(g, seed_nodes, num_layers,
     blocks = []
     i=1
     for subgidx in subgidices:
-        print('[PF] bg get_subg_{}'.format(i), time.time())
+        # print('[PF] bg get_subg_{}'.format(i), time.time())
         induced_edges = subgidx.induced_edges
         subg = DGLGraph(subgidx.graph)
-        print('[PF] ed get_subg_{}'.format(i), time.time())
+        # print('[PF] ed get_subg_{}'.format(i), time.time())
 
-        print('[PF] bg copy_data_{}'.format(i), time.time())
+        # print('[PF] bg copy_data_{}'.format(i), time.time())
         if copy_ndata: # label, feat...
             node_frames = utils.extract_node_subframes(g, None)
             utils.set_new_frames(subg, node_frames=node_frames)
@@ -917,21 +917,19 @@ def ccg_sample_full_neighbors(g, seed_nodes, num_layers,
         if copy_edata:
             edge_frames = utils.extract_edge_subframes(g, induced_edges)
             utils.set_new_frames(subg, edge_frames=edge_frames)
-        print('[PF] ed copy_data_{}'.format(i), time.time())
+        # print('[PF] ed copy_data_{}'.format(i), time.time())
 
-        print('[PF] bg to_block_{}'.format(i), time.time())
+        # print('[PF] bg to_block_{}'.format(i), time.time())
         eid = subg.edata[EID]
-        print(subg)
-        print(eid)
         block = to_block(subg, seed_nodes)
         block.edata[EID] = eid
         seed_nodes = block.srcdata[NID]
         blocks.insert(0, block)
         # print(f'block_{i}:', block)
-        print('[PF] ed to_block_{}'.format(i), time.time())
+        # print('[PF] ed to_block_{}'.format(i), time.time())
         i+=1
     
-    print('[PF] ed sample_neighbors', time.time())
+    # print('[PF] ed sample_neighbors', time.time())
 
     return seed_nodes, output_nodes, blocks
 

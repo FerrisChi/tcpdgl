@@ -30,16 +30,15 @@ class SAGE(nn.Module):
                 h = self.dropout(h)
         return h
 
-    def ccg_inference(self, g, device, batch_size, num_workers, buffer_device=None):
+    def ccg_inference(self, g, device, batch_size, buffer_device=None):
         # The difference between this inference function and the one in the official
         # example is that the intermediate results can also benefit from prefetching.
         feat = g.ndata['feat']
-        print(feat)
-        sampler = dgl.dataloading.CCGMultiLayerFullNeighborSampler(1, prefetch_node_feats=['h'])
+        # print(feat)
+        sampler = dgl.dataloading.CCGMultiLayerFullNeighborSampler(1, prefetch_node_feats=['feat'])
         dataloader = dgl.dataloading.CCGDataLoader(
                 g, torch.arange(g.ccg.v_num).to(g.device), sampler, device=device,
-                batch_size=batch_size, shuffle=False, drop_last=False, num_workers=num_workers,
-                persistent_workers=(num_workers > 0))
+                batch_size=batch_size, shuffle=False, drop_last=False, num_workers=0)
         if buffer_device is None:
             buffer_device = device
 
@@ -47,7 +46,7 @@ class SAGE(nn.Module):
             y = torch.zeros(
                 g.ccg.v_num, self.n_hidden if l != len(self.layers) - 1 else self.n_classes,
                 device=buffer_device)
-            print(y, y.shape)
+            # print(y, y.shape)
             feat = feat.to(device)
             for input_nodes, output_nodes, blocks in dataloader:
                 x = feat[input_nodes]
@@ -57,22 +56,6 @@ class SAGE(nn.Module):
                     h = self.dropout(h)
                 # by design, our output nodes are contiguous
                 y[output_nodes[0]:output_nodes[-1]+1] = h.to(buffer_device)
-                print(y, y.shape)
-            #     y = torch.zeros(
-            #     g.num_nodes(), self.n_hidden if l != len(self.layers) - 1 else self.n_classes,
-            #     device=buffer_device)
-            # print('y', y, sep='\n')
-            # for input_nodes, output_nodes, blocks in dataloader:
-            #     x = blocks[0].srcdata['h']
-            #     h = layer(blocks[0], x)
-            #     if l != len(self.layers) - 1:
-            #         h = F.relu(h)
-            #         h = self.dropout(h)
-            #     y[output_nodes] = h.to(buffer_device)
-            #     print(y)
-            # # print('y: ')
-            # # print(y)
-            # g._node_frames[0]['h'] = y
             feat = y
         return y
 

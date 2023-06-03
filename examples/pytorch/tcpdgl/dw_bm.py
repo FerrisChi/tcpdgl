@@ -196,7 +196,7 @@ if __name__ == "__main__":
     )
     ## ogbl datasets
     parser.add_argument(
-        "--graph_name", type=str,default='ogbl-ppa', help="name of ogbl dataset, e.g. ogbl-ddi"
+        "--graph_name", type=str,default='ogbl_ppa', help="name of ogbl dataset, e.g. ogbl-ddi"
     )
     parser.add_argument(
         "--load_from_ogbl",
