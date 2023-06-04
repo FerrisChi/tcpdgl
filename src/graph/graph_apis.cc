@@ -3,6 +3,7 @@
  * @file graph/graph.cc
  * @brief DGL graph index APIs
  */
+#include <dgl/runtime/container.h>
 #include <dgl/graph.h>
 #include <dgl/graph_op.h>
 #include <dgl/immutable_graph.h>
@@ -11,6 +12,8 @@
 #include <dgl/sampler.h>
 
 #include "../c_api_common.h"
+#include "serialize/graph_serialize.h"
+#include "sampling/ccgsample/ccg_sample.h"
 
 using dgl::runtime::DGLArgs;
 using dgl::runtime::DGLArgValue;
@@ -323,5 +326,55 @@ DGL_REGISTER_GLOBAL("graph_index._CAPI_DGLSortAdj")
       GraphRef g = args[0];
       g->SortCSR();
     });
+
+////////////////////////////////
+// CCG C APIs
+////////////////////////////////
+
+DGL_REGISTER_GLOBAL("ccg._CAPI_TransferCCGTo_")
+.set_body([] (DGLArgs args, DGLRetValue* rv) {
+    dgl::serialize::CCGData hg = args[0];
+    const int device_type = args[1];
+    const int device_id = args[2];
+    DGLContext ctx;
+    ctx.device_type = static_cast<DGLDeviceType>(device_type);
+    ctx.device_id = device_id;
+    void *gpu_ccg = dgl::tcpdgl::CCGCopyTo(hg->n_nodes, hg->ubl, hg->graph, hg->offset, ctx);
+    void *curand_states = dgl::tcpdgl::InitCurand(ctx);
+    hg->gpu_ccg = gpu_ccg;
+    hg->curand_states = curand_states;
+    hg->graph.clear();
+    hg->offset.clear();
+    *rv = hg;
+  });
+
+DGL_REGISTER_GLOBAL("ccg._CAPI_CCGNumEdges")
+.set_body([](DGLArgs args, DGLRetValue* rv) {
+  dgl::serialize::CCGData hg = args[0];
+  *rv = dgl::tcpdgl::CCGNumEdges();
+});
+
+DGL_REGISTER_GLOBAL("ccg._CAPI_CCGOutDegrees")
+.set_body([](DGLArgs args, DGLRetValue* rv) {
+  dgl::serialize::CCGData hg = args[0];
+  IdArray vids = args[1];
+  *rv = dgl::tcpdgl::CCGOutGegrees(vids);
+});
+
+DGL_REGISTER_GLOBAL("ccg._CAPI_CCGPinMemory_")
+.set_body([] (DGLArgs args, DGLRetValue* rv) {
+    dgl::serialize::CCGData hg = args[0];
+    // DeviceAPI::Get(kDGLCUDA)->PinData();
+    // hgindex->PinMemory_();
+    *rv = hg;
+  });
+
+DGL_REGISTER_GLOBAL("ccg._CAPI_CCGUnpinMemory_")
+.set_body([] (DGLArgs args, DGLRetValue* rv) {
+    dgl::serialize::CCGData hg = args[0];
+    // auto hgindex = std::dynamic_pointer_cast<HeteroGraph>(hg.sptr());
+    // hgindex->UnpinMemory_();
+    *rv = hg;
+  });
 
 }  // namespace dgl

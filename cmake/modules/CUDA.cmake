@@ -282,6 +282,7 @@ macro(dgl_config_cuda out_variable)
     src/geometry/cuda/*.cu
     src/graph/transform/cuda/*.cu
     src/graph/sampling/randomwalks/*.cu
+    src/graph/sampling/ccgsample/*.cu
   )
 
   # NVCC flags

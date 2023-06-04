@@ -14,7 +14,7 @@ import numpy as np
 import requests
 
 from .. import backend as F
-from .graph_serialize import load_graphs, load_labels, save_graphs
+from .graph_serialize import load_graphs, load_ccg_for, load_labels, save_graphs, save_feat, load_feat
 from .tensor_serialize import load_tensors, save_tensors
 
 __all__ = [
@@ -27,12 +27,15 @@ __all__ = [
     "split_dataset",
     "save_graphs",
     "load_graphs",
+    "load_ccg_for",
     "load_labels",
     "save_tensors",
     "load_tensors",
     "add_nodepred_split",
     "add_node_property_split",
     "mask_nodes_by_property",
+    "save_feat",
+    "load_feat",
 ]
 
 

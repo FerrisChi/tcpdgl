@@ -32,7 +32,7 @@
  *
  */
 #include "graph_serialize.h"
-
+#include "./dglstream.h"
 #include <dgl/graph_op.h>
 #include <dgl/immutable_graph.h>
 #include <dgl/runtime/container.h>
@@ -46,6 +46,8 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+#include "../sampling/ccgsample/ccg_sample.h"
 
 using namespace dgl::runtime;
 
@@ -161,5 +163,76 @@ DGL_REGISTER_GLOBAL("data.graph_serialize._CAPI_LoadGraphFiles_V2")
       *rv = List<HeteroGraphData>(LoadHeteroGraphs(filename, idx_list));
     });
 
+DGL_REGISTER_GLOBAL("data.graph_serialize._CAPI_LoadCCGFile")
+  .set_body([](DGLArgs args, DGLRetValue *rv) {
+    std::string file_path = args[0];
+    *rv = LoadCCG(file_path);
+  });
+
+DGL_REGISTER_GLOBAL("data.graph_serialize._CAPI_GetVNumFromCCGData")
+  .set_body([](DGLArgs args, DGLRetValue *rv) {
+    CCGData ccg_data = args[0];
+    *rv = (int64_t)(ccg_data->n_nodes);
+  });
+
+  
+DGL_REGISTER_GLOBAL("data.graph_serialize._CAPI_SaveFeat")
+  .set_body([](DGLArgs args, DGLRetValue *rv) {
+    std::string filename = args[0];
+    HeteroGraphData gdata = args[1];
+    auto fs = std::unique_ptr<DGLStream>(
+    DGLStream::Create(filename.c_str(), "w", false, ANY_CODE));
+    CHECK(fs->IsValid()) << "File name " << filename << " is not a valid name";
+
+    fs->Write(gdata->node_tensors);
+    fs->Write(gdata->edge_tensors);
+  });
+
+DGL_REGISTER_GLOBAL("data.graph_serialize._CAPI_LoadFeat")
+  .set_body([](DGLArgs args, DGLRetValue *rv) {
+    std::string filename = args[0];
+    HeteroGraphData gdata = args[1];
+    auto fs = std::unique_ptr<DGLStream>(
+    DGLStream::Create(filename.c_str(), "r", false, ANY_CODE));
+    CHECK(fs->IsValid()) << "File name " << filename << " is not a valid name";
+    fs->Read(&(gdata->node_tensors));
+    fs->Read(&(gdata->edge_tensors));
+    *rv = gdata;
+  });
+  
+
 }  // namespace serialize
+
+DGL_REGISTER_GLOBAL("dataloading.neighbor_sampler._CAPI_AllocNextDoorData")
+.set_body([](DGLArgs args, DGLRetValue *rv) {
+  serialize::CCGData ccg_data = args[0];
+  uint64_t seed_nodes_size = args[1];
+  IdArray fanouts_arr = args[2];
+  const int device_type = args[3];
+  const int device_id = args[4];
+  
+  DGLContext ctx;
+  ctx.device_type = static_cast<DGLDeviceType>(device_type);
+  ctx.device_id = device_id;
+
+  const auto& _fanouts = fanouts_arr.ToVector<int64_t>();
+  std::vector<int32_t> fanouts;
+  for (auto f : _fanouts) {
+    fanouts.push_back(static_cast<int32_t>(f));
+  }
+  if (fanouts[0] == -1) { // CCGMultiLayerFullNeighborSampler
+    *rv = true;
+    return;
+  }
+
+  ccg_data->nextDoorData = new tcpdgl::NextDoorData;
+  ccg_data->nextDoorData->setNumber(ccg_data->n_nodes, seed_nodes_size, fanouts);  
+  tcpdgl::allocNextDoorDataOnDevice(*(ccg_data->nextDoorData), ctx);
+  tcpdgl::setNextDoorData(ccg_data->nextDoorData, ccg_data->gpu_ccg, ccg_data->curand_states);
+
+  // std::cout<<"Alloc NextDoorData done."<<std::endl;
+
+  *rv=true;
+});
+
 }  // namespace dgl

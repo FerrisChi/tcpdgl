@@ -1,3 +1,10 @@
+result/
+log/
+*.pt
+*.npy
+*.txt
+*.zip
+
 # IDE
 .idea
 
@@ -157,7 +164,7 @@ cscope.*
 
 # vscode
 .clangd
-.vscode
+.vscode/
 
 # asv
 .asv
@@ -168,3 +175,4 @@ config.cmake
 
 # model file
 *.pth
+port.cpp

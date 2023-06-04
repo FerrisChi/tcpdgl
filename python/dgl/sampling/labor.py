@@ -25,8 +25,11 @@ from ..base import DGLError
 from ..heterograph import DGLGraph
 from ..random import choice
 from .utils import EidExcluder
+import time
+import torch.distributed as dist
+from ..utils import pflogger
 
-__all__ = ["sample_labors"]
+__all__ = ["sample_labors", "ccg_sample_labors"]
 
 
 def sample_labors(
@@ -320,6 +323,8 @@ def _sample_labors(
             else:
                 excluded_edges_all_t.append(nd.array([], ctx=ctx))
 
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        pflogger.info('bg sample.capi %f', time.time())
     ret_val = _CAPI_DGLSampleLabors(
         g._graph,
         nodes_all_types,
@@ -331,6 +336,9 @@ def _sample_labors(
         random_seed,
         nids_all_types,
     )
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        pflogger.info('ed sample.capi %f', time.time())
+
     subgidx = ret_val[0]
     importances = [F.from_dgl_nd(importance) for importance in ret_val[1:]]
     induced_edges = subgidx.induced_edges
@@ -344,9 +352,176 @@ def _sample_labors(
         edge_frames = utils.extract_edge_subframes(g, induced_edges)
         utils.set_new_frames(ret, edge_frames=edge_frames)
 
+    # print(f'importances {importances}')
+    # print(f'induced_edges {induced_edges}')
+    # print(ret.nodes(), ret.edges())
+    # print(node_frames, edge_frames)
+    
     return ret, importances
 
 
 DGLGraph.sample_labors = utils.alias_func(sample_labors)
+
+def ccg_sample_labors(
+    g,
+    nodes,
+    fanout,
+    edge_dir="in",
+    prob=None,
+    importance_sampling=0,
+    random_seed=None,
+    copy_ndata=True,
+    copy_edata=True,
+    exclude_edges=None,
+    output_device=None,
+):
+    frontier, importances = _ccg_sample_labors(
+        g,
+        nodes,
+        fanout,
+        edge_dir=edge_dir,
+        prob=prob,
+        importance_sampling=importance_sampling,
+        random_seed=random_seed,
+        copy_ndata=copy_ndata,
+        copy_edata=copy_edata,
+    )
+    if exclude_edges is not None:
+        eid_excluder = EidExcluder(exclude_edges)
+        frontier, importances = eid_excluder(frontier, importances)
+    if output_device is None:
+        return (frontier, importances)
+    else:
+        return (
+            frontier.to(output_device),
+            list(map(lambda x: x.to(output_device), importances)),
+        )
+
+def _ccg_sample_labors(
+    g,
+    nodes,
+    fanout,
+    edge_dir="in",
+    prob=None,
+    importance_sampling=0,
+    random_seed=None,
+    copy_ndata=True,
+    copy_edata=True,
+    exclude_edges=None,
+):
+    if random_seed is None:
+        random_seed = F.to_dgl_nd(choice(1e18, 1))
+    if not isinstance(nodes, dict):
+        if len(g.ntypes) > 1:
+            raise DGLError(
+                "Must specify node type when the graph is not homogeneous."
+            )
+        nodes = {g.ntypes[0]: nodes}
+
+    nodes = utils.prepare_tensor_dict(g, nodes, "nodes")
+    if len(nodes) == 0:
+        raise ValueError(
+            "Got an empty dictionary in the nodes argument. "
+            "Please pass in a dictionary with empty tensors as values instead."
+        )
+    ctx = utils.to_dgl_context(F.context(next(iter(nodes.values()))))
+    nodes_all_types = []
+    # nids_all_types is needed if one wants labor to work for subgraphs whose vertices have
+    # been renamed and the rolled randoms should be rolled for global vertex ids.
+    # It is disabled for now below by passing empty ndarrays.
+    nids_all_types = [nd.array([], ctx=ctx) for _ in g.ntypes]
+    for ntype in g.ntypes:
+        if ntype in nodes:
+            nodes_all_types.append(F.to_dgl_nd(nodes[ntype]))
+        else:
+            nodes_all_types.append(nd.array([], ctx=ctx))
+
+    if isinstance(fanout, nd.NDArray):
+        fanout_array = fanout
+    else:
+        if not isinstance(fanout, dict):
+            fanout_array = [int(fanout)] * len(g.etypes)
+        else:
+            if len(fanout) != len(g.etypes):
+                raise DGLError(
+                    "Fan-out must be specified for each edge type "
+                    "if a dict is provided."
+                )
+            fanout_array = [None] * len(g.etypes)
+            for etype, value in fanout.items():
+                fanout_array[g.get_etype_id(etype)] = value
+        fanout_array = F.to_dgl_nd(F.tensor(fanout_array, dtype=F.int64))
+
+    if (
+        isinstance(prob, list)
+        and len(prob) > 0
+        and isinstance(prob[0], nd.NDArray)
+    ):
+        prob_arrays = prob
+    elif prob is None:
+        prob_arrays = [nd.array([], ctx=nd.cpu())] * len(g.etypes)
+    else:
+        prob_arrays = []
+        for etype in g.canonical_etypes:
+            if prob in g.edges[etype].data:
+                prob_arrays.append(F.to_dgl_nd(g.edges[etype].data[prob]))
+            else:
+                prob_arrays.append(nd.array([], ctx=nd.cpu()))
+
+    excluded_edges_all_t = []
+    if exclude_edges is not None:
+        if not isinstance(exclude_edges, dict):
+            if len(g.etypes) > 1:
+                raise DGLError(
+                    "Must specify etype when the graph is not homogeneous."
+                )
+            exclude_edges = {g.canonical_etypes[0]: exclude_edges}
+        exclude_edges = utils.prepare_tensor_dict(g, exclude_edges, "edges")
+        for etype in g.canonical_etypes:
+            if etype in exclude_edges:
+                excluded_edges_all_t.append(F.to_dgl_nd(exclude_edges[etype]))
+            else:
+                excluded_edges_all_t.append(nd.array([], ctx=ctx))
+
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        pflogger.info('bg sample.capi %f', time.time())
+    ret_val = _CAPI_CCGSampleLabors(
+        g.ccg.ccg_data,
+        nodes_all_types,
+        fanout_array,
+        edge_dir,
+        prob_arrays,
+        excluded_edges_all_t,
+        importance_sampling,
+        random_seed,
+        nids_all_types,
+    )
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        pflogger.info('ed sample.capi %f', time.time())
+
+
+    subgidx = ret_val[0]
+    importances = [F.from_dgl_nd(importance) for importance in ret_val[1:]]
+    induced_edges = subgidx.induced_edges
+    ret = DGLGraph(subgidx.graph)
+
+    if copy_ndata:
+        node_frames = utils.extract_node_subframes(g, None)
+        utils.set_new_frames(ret, node_frames=node_frames)
+
+    if copy_edata:
+        edge_frames = utils.extract_edge_subframes(g, induced_edges)
+        utils.set_new_frames(ret, edge_frames=edge_frames)
+
+    # print(f'importances {importances}')
+    # print(f'induced_edges {induced_edges}')
+    # print(ret.num_nodes(), ret.num_edges(), ret.num_src_nodes(), ret.num_dst_nodes())
+    # print(ret.nodes(), ret.edges())
+    # print(node_frames)
+    # print(edge_frames)
+    
+    return ret, importances
+
+DGLGraph.ccg_sample_labors = utils.alias_func(ccg_sample_labors)
 
 _init_api("dgl.sampling.labor", __name__)

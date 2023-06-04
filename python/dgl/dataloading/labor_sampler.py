@@ -22,6 +22,9 @@ from ..base import EID, NID
 from ..random import choice
 from ..transforms import to_block
 from .base import BlockSampler
+import time
+import torch.distributed as dist
+from ..utils import pflogger
 
 
 class LaborSampler(BlockSampler):
@@ -206,9 +209,13 @@ class LaborSampler(BlockSampler):
                 exclude_edges=exclude_eids,
             )
             eid = frontier.edata[EID]
+            if not dist.is_initialized() or dist.get_rank() == 0:
+                pflogger.info('bg sample.to_block %f', time.time())
             block = to_block(
                 frontier, seed_nodes, include_dst_in_src=True, src_nodes=None
             )
+            if not dist.is_initialized() or dist.get_rank() == 0:
+                pflogger.info('ed sample.to_block %f', time.time())
             block.edata[EID] = eid
             if len(g.canonical_etypes) > 1:
                 for etype, importance in zip(g.canonical_etypes, importances):

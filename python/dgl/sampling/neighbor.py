@@ -2,15 +2,22 @@
 
 from .. import backend as F, ndarray as nd, utils
 from .._ffi.function import _init_api
-from ..base import DGLError, EID
+from ..transforms.to_block import to_block
+from ..base import DGLError, EID, NID
 from ..heterograph import DGLGraph
 from .utils import EidExcluder
+from ..utils import pflogger
+import torch.distributed as dist
+
+import time
 
 __all__ = [
     "sample_etype_neighbors",
     "sample_neighbors",
     "sample_neighbors_biased",
     "select_topk",
+    "ccg_sample_neighbors",
+    "ccg_sample_full_neighbors",
 ]
 
 
@@ -446,6 +453,8 @@ def _sample_neighbors(
             else:
                 excluded_edges_all_t.append(nd.array([], ctx=ctx))
 
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        pflogger.info('bg sample.capi %f', time.time())
     subgidx = _CAPI_DGLSampleNeighbors(
         g._graph,
         nodes_all_types,
@@ -455,6 +464,9 @@ def _sample_neighbors(
         excluded_edges_all_t,
         replace,
     )
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        pflogger.info('ed sample.capi %f', time.time())
+
     induced_edges = subgidx.induced_edges
     ret = DGLGraph(subgidx.graph, g.ntypes, g.etypes)
 
@@ -829,5 +841,98 @@ def select_topk(
 
 
 DGLGraph.select_topk = utils.alias_func(select_topk)
+
+def ccg_sample_neighbors(g, seed_nodes, fanouts, load_balancing = True,
+                         copy_ndata=True, copy_edata=True, output_device=None):
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        pflogger.info('bg sample.capi %f', time.time())
+    fanouts_array = F.tensor(fanouts, dtype=F.int64).flip(0)
+    subgidices = _CAPI_CCGSampleNeighbors(g.ccg.ccg_data, F.to_dgl_nd(seed_nodes), F.to_dgl_nd(fanouts_array), load_balancing)
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        pflogger.info('ed sample.capi %f', time.time())
+        
+    output_nodes = seed_nodes
+
+    blocks = []
+    i=0
+    for subgidx in subgidices:
+        induced_edges = subgidx.induced_edges
+        subg = DGLGraph(subgidx.graph)
+
+        if copy_ndata: # label, feat...
+            node_frames = utils.extract_node_subframes(g, None)
+            utils.set_new_frames(subg, node_frames=node_frames)
+        
+        if copy_edata:
+            edge_frames = utils.extract_edge_subframes(g, induced_edges)
+            utils.set_new_frames(subg, edge_frames=edge_frames)
+
+        eid = subg.edata[EID]
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            pflogger.info('bg sample.to_block %f', time.time())
+        block = to_block(subg, seed_nodes)
+        block.edata[EID] = eid
+        seed_nodes = block.srcdata['_ID']
+        blocks.insert(0, block)
+        if not dist.is_initialized() or dist.get_rank() == 0:
+            pflogger.info('ed sample.to_block %f', time.time())
+        # print(f'finish to_block_{i}')
+        i+=1
+        
+
+    return seed_nodes, output_nodes, blocks
+
+DGLGraph.ccg_sample_neighbors = utils.alias_func(ccg_sample_neighbors)
+
+def ccg_sample_full_neighbors(g, seed_nodes, num_layers,
+                         copy_ndata=True, copy_edata=True, output_device=None):
+    # print(f'ccg_sample_neighbors seed_nodes: ',seed_nodes.device)
+    
+    # print('[PF] bg sample_neighbors', time.time())
+    # print('[PF] bg seed_node_to_cuda', time.time())
+    seed_nodes = seed_nodes.to('cuda:0')
+    # print('[PF] ed seed_node_to_cuda', time.time())
+
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        pflogger.info('bg sample.capi %f', time.time())
+    subgidices = _CAPI_CCGFullLayerNeighbors(g.ccg.ccg_data, F.to_dgl_nd(seed_nodes), num_layers)
+    if not dist.is_initialized() or dist.get_rank() == 0:
+        pflogger.info('ed sample.capi %f', time.time())
+    
+    output_nodes = seed_nodes
+
+    blocks = []
+    i=1
+    for subgidx in subgidices:
+        # print('[PF] bg get_subg_{}'.format(i), time.time())
+        induced_edges = subgidx.induced_edges
+        subg = DGLGraph(subgidx.graph)
+        # print('[PF] ed get_subg_{}'.format(i), time.time())
+
+        # print('[PF] bg copy_data_{}'.format(i), time.time())
+        if copy_ndata: # label, feat...
+            node_frames = utils.extract_node_subframes(g, None)
+            utils.set_new_frames(subg, node_frames=node_frames)
+        
+        if copy_edata:
+            edge_frames = utils.extract_edge_subframes(g, induced_edges)
+            utils.set_new_frames(subg, edge_frames=edge_frames)
+        # print('[PF] ed copy_data_{}'.format(i), time.time())
+
+        # print('[PF] bg to_block_{}'.format(i), time.time())
+        eid = subg.edata[EID]
+        block = to_block(subg, seed_nodes)
+        block.edata[EID] = eid
+        seed_nodes = block.srcdata[NID]
+        blocks.insert(0, block)
+        # print(f'block_{i}:', block)
+        # print('[PF] ed to_block_{}'.format(i), time.time())
+        i+=1
+    
+    # print('[PF] ed sample_neighbors', time.time())
+
+    return seed_nodes, output_nodes, blocks
+
+DGLGraph.ccg_sample_full_neighbors = utils.alias_func(ccg_sample_full_neighbors)
 
 _init_api("dgl.sampling.neighbor", __name__)

@@ -41,11 +41,13 @@
 
 #include <algorithm>
 #include <iostream>
+#include <fstream>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "graph_serialize.h"
+#include "../sampling/ccgsample/ccg_sample.h"
 
 using namespace dgl::runtime;
 
@@ -267,6 +269,66 @@ void StorageMetaDataObject::SetMetaData(
 
 void StorageMetaDataObject::SetGraphData(std::vector<GraphData> gdata) {
   this->graph_data = List<GraphData>(gdata);
+}
+
+VertexID_t ReadCCG(const std::string &file_path, std::vector<uint32_t>& graph, std::vector<uint32_t>& offset, uint64_t& ubl) {
+  const int GRAPH_BYTE = 4;
+  std::ifstream ifs, ifso;
+  ifs.open(file_path + ".graph", std::ios::in | std::ios::binary | std::ios::ate);
+  CHECK(ifs.is_open()) << "Open graph file failed!";
+  std::streamsize size = ifs.tellg();
+  ifs.seekg(0, std::ios::beg);
+  std::vector<uint8_t> buffer(size);
+  ifs.read((char*)buffer.data(), size);
+  ifs.close();
+
+  uint32_t tmp = 0;
+  for (size_t i = 0; i < buffer.size(); i++) {
+    tmp <<= 8;
+    tmp += buffer[i];
+    if ((i + 1) % GRAPH_BYTE == 0) {
+      graph.push_back(tmp);
+    }
+  }
+  if (size % GRAPH_BYTE) {
+    int rem = size % GRAPH_BYTE;
+    while (rem % GRAPH_BYTE) tmp <<= 8, rem++;
+    graph.push_back(tmp);
+  }
+
+  ifso.open(file_path + ".offset", std::ios::in | std::ios::binary | std::ios::ate);
+  CHECK(ifso.is_open()) << "Open offset file failed!";
+  size = ifso.tellg();
+  ifso.seekg(0, std::ios::beg);
+  buffer.clear();
+  buffer.resize(size);
+  ifso.read((char*)buffer.data(), size);
+  ifso.close();
+
+  ubl = buffer[0];
+  tmp = 0;
+  for (size_t i = 1; i < buffer.size(); i++) {
+    tmp <<= 8;
+    tmp += buffer[i];
+    if (i % GRAPH_BYTE == 0) {
+      offset.push_back(tmp);
+    }
+  }
+  --size;
+  if (size % GRAPH_BYTE) {
+    int rem = size % GRAPH_BYTE;
+    while (rem % GRAPH_BYTE) tmp <<= 8, rem++;
+    offset.push_back(tmp);
+  }
+
+  return (VertexID_t)((size << 3l) / ubl);
+}
+
+CCGData LoadCCG(const std::string &file_path) {
+  CCGData ret = CCGData::Create();
+  ret->n_nodes = ReadCCG(file_path, ret->graph, ret->offset, ret->ubl);
+  std::cout<<"Read CCG from "<<file_path << ". n_nodes: " << ret->n_nodes << " graph size: " << ret->graph.size() << " offeset size: " << ret->offset.size() << std::endl;
+  return ret;
 }
 
 }  // namespace serialize
