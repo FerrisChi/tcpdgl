@@ -1,6 +1,8 @@
-<p align="center">
+<!-- <p align="center">
   <img src="http://data.dgl.ai/asset/logo.jpg" height="200">
-</p>
+</p> -->
+
+![](tdgl.jpg)
 
 [![Latest Release](https://img.shields.io/github/v/release/dmlc/dgl)](https://github.com/dmlc/dgl/releases)
 [![Conda Latest Release](https://anaconda.org/dglteam/dgl/badges/version.svg)](https://anaconda.org/dglteam/dgl)
